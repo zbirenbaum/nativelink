@@ -550,7 +550,14 @@ impl SimpleSchedulerImpl {
             if running_action.notify_channel.receiver_count() > 0 {
                 running_action.set_last_update_timestamp(now);
             } else if running_action.get_last_update_timestamp() + self.disconnect_timeout_s < now {
-                remove_actions.push(running_action.action_info.clone())
+                remove_actions.push(running_action.action_info.clone());
+                let worker_id = running_action.worker_id.expect("Action is running but has no assigned worker");
+                let unique_qualifier = running_action.action_info.unique_qualifier.clone();
+                if let Some(worker) = self.workers.workers.get_mut(&worker_id) {
+                    let _ = worker
+                        .send_kill_action_request(&unique_qualifier)
+                        .err_tip(|| "Failed to send kill action request");
+                }
             }
         }
         self.active_actions

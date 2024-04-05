@@ -17,7 +17,9 @@ use std::sync::Arc;
 use async_lock::Mutex;
 use async_trait::async_trait;
 use nativelink_error::{make_input_err, Error};
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionKillRequest, StartExecute,
+};
 use nativelink_util::action_messages::ActionResult;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -43,6 +45,9 @@ pub struct MockRunningActionsManager {
 
     rx_kill_all: Mutex<mpsc::UnboundedReceiver<()>>,
     tx_kill_all: mpsc::UnboundedSender<()>,
+
+    rx_kill_id: Mutex<mpsc::UnboundedReceiver<ActionKillRequest>>,
+    tx_kill_id: mpsc::UnboundedSender<ActionKillRequest>,
     metrics: Arc<Metrics>,
 }
 
@@ -57,6 +62,7 @@ impl MockRunningActionsManager {
         let (tx_call, rx_call) = mpsc::unbounded_channel();
         let (tx_resp, rx_resp) = mpsc::unbounded_channel();
         let (tx_kill_all, rx_kill_all) = mpsc::unbounded_channel();
+        let (tx_kill_id, rx_kill_id) = mpsc::unbounded_channel();
         Self {
             rx_call: Mutex::new(rx_call),
             tx_call,
@@ -64,6 +70,8 @@ impl MockRunningActionsManager {
             tx_resp,
             rx_kill_all: Mutex::new(rx_kill_all),
             tx_kill_all,
+            rx_kill_id: Mutex::new(rx_kill_id),
+            tx_kill_id,
             metrics: Arc::new(Metrics::default()),
         }
     }
@@ -104,6 +112,14 @@ impl MockRunningActionsManager {
     pub async fn expect_kill_all(&self) {
         let mut rx_kill_all_lock = self.rx_kill_all.lock().await;
         rx_kill_all_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc");
+    }
+
+    pub async fn expect_kill_id(&self) {
+        let mut rx_kill_id_lock = self.rx_kill_id.lock().await;
+        rx_kill_id_lock
             .recv()
             .await
             .expect("Could not receive msg in mpsc");
@@ -149,6 +165,12 @@ impl RunningActionsManager for MockRunningActionsManager {
             ))))
             .expect("Could not send request to mpsc");
         Ok(())
+    }
+
+    async fn action_kill_request(&self, action_kill_request: ActionKillRequest) {
+        self.tx_kill_id
+            .send(action_kill_request)
+            .expect("Could not send request to mpsc");
     }
 
     async fn kill_all(&self) {

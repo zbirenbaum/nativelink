@@ -203,12 +203,14 @@ impl<'a, T: WorkerApiClientTrait, U: RunningActionsManager> LocalWorkerImpl<'a, 
                                 "Got ConnectionResult in LocalWorker::run which should never happen"
                             ));
                         }
-                        // TODO(allada) We should possibly do something with this notification.
                         Update::Disconnect(()) => {
                             self.metrics.disconnects_received.inc();
                         }
                         Update::KeepAlive(()) => {
                             self.metrics.keep_alives_received.inc();
+                        }
+                        Update::ActionKillRequest(action_kill_request) => {
+                            let _ = self.running_actions_manager.action_kill_request(action_kill_request).await;
                         }
                         Update::StartAction(start_execute) => {
                             self.metrics.start_actions_received.inc();

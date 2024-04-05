@@ -131,6 +131,11 @@ message ConnectionResult {
     reserved 2; // NextId.
 }
 
+message ActionKillRequest {
+    string worker_id = 1;
+    string action_id = 2;
+    reserved 3;
+}
 /// Communication from the scheduler to the worker.
 message UpdateForWorker {
     oneof update {
@@ -152,8 +157,11 @@ message UpdateForWorker {
         /// Informs the worker that it has been disconnected from the pool.
         /// The worker may discard any outstanding work that is being executed.
         google.protobuf.Empty disconnect = 4;
+
+        /// Instructs the worker to kill the action
+        ActionKillRequest action_kill_request = 5;
     }
-    reserved 5; // NextId.
+    reserved 6; // NextId.
 }
 
 message StartExecute {

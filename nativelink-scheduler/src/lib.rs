@@ -14,12 +14,13 @@
 
 pub mod action_scheduler;
 pub mod cache_lookup_scheduler;
+pub mod db_adapter;
 pub mod default_scheduler_factory;
 pub mod distributed_scheduler;
 pub mod grpc_scheduler;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
-pub mod scheduler_state;
 pub mod simple_scheduler;
+pub mod state_manager;
 pub mod worker;
 pub mod worker_scheduler;

@@ -23,6 +23,7 @@ use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     simple(SimpleScheduler),
+    distributed(DistributedScheduler),
     grpc(GrpcScheduler),
     cache_lookup(CacheLookupScheduler),
     property_modifier(PropertyModifierScheduler),
@@ -63,6 +64,62 @@ pub enum WorkerAllocationStrategy {
     least_recently_used,
     /// Prefer workers that have been most recently used to run a job.
     most_recently_used,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DistributedScheduler {
+    /// A list of supported platform properties mapped to how these properties
+    /// are used when the scheduler looks for worker nodes capable of running
+    /// the task.
+    ///
+    /// For example, a value of:
+    /// ```json
+    /// { "cpu_count": "minimum", "cpu_arch": "exact" }
+    /// ```
+    /// With a job that contains:
+    /// ```json
+    /// { "cpu_count": "8", "cpu_arch": "arm" }
+    /// ```
+    /// Will result in the scheduler filtering out any workers that do not have
+    /// "cpu_arch" = "arm" and filter out any workers that have less than 8 cpu
+    /// cores available.
+    ///
+    /// The property names here must match the property keys provided by the
+    /// worker nodes when they join the pool. In other words, the workers will
+    /// publish their capabilities to the scheduler when they join the worker
+    /// pool. If the worker fails to notify the scheduler of it's (for example)
+    /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
+    /// have the "cpu_arch" label. There is no special treatment of any platform
+    /// property labels other and entirely driven by worker configs and this
+    /// config.
+    pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
+
+    /// The amount of time to retain completed actions in memory for in case
+    /// a WaitExecution is called after the action has completed.
+    /// Default: 60 (seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub retain_completed_for_s: u64,
+
+    /// Remove workers from pool once the worker has not responded in this
+    /// amount of time in seconds.
+    /// Default: 5 (seconds)
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub worker_timeout_s: u64,
+
+    /// If a job returns an internal error or times out this many times when
+    /// attempting to run on a worker the scheduler will return the last error
+    /// to the client. Jobs will be retried and this configuration is to help
+    /// prevent one rogue job from infinitely retrying and taking up a lot of
+    /// resources when the task itself is the one causing the server to go
+    /// into a bad state.
+    /// Default: 3
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_job_retries: usize,
+
+    /// The strategy used to assign workers jobs.
+    #[serde(default)]
+    pub allocation_strategy: WorkerAllocationStrategy,
 }
 
 #[derive(Deserialize, Debug, Default)]

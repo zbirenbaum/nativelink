@@ -26,9 +26,8 @@ use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultEx
 use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
-use nativelink_util::metrics_utils::Registry;
 use parking_lot::{Mutex, MutexGuard};
-use tokio::sync::{watch, Notify};
+use tokio::sync::watch;
 use tracing::{error, warn};
 
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
@@ -48,7 +47,6 @@ struct AwaitedAction {
     /// Worker that is currently running this action, None if unassigned.
     worker_id: Option<WorkerId>,
 }
-
 struct Workers {
     workers: LruCache<WorkerId, Worker>,
 }
@@ -118,7 +116,7 @@ impl Workers {
     fn find_worker_for_action_mut<'a>(
         &'a mut self,
         awaited_action: &AwaitedAction,
-        allocation_strategy: WorkerAllocationStrategy
+        allocation_strategy: WorkerAllocationStrategy,
     ) -> Option<&'a mut Worker> {
         assert!(matches!(
             awaited_action.current_state.stage,
@@ -192,6 +190,18 @@ pub struct SchedulerState {
     // keep their completion state around for a while to send back.
     // TODO(#192) Revisit if this is the best way to handle recently completed actions.
     recently_completed_actions: HashSet<CompletedAction>,
+}
+
+impl Default for SchedulerState {
+    fn default() -> Self {
+        Self {
+            workers: Workers::new(),
+            queued_actions_set: HashSet::new(),
+            queued_actions: BTreeMap::new(),
+            active_actions: HashMap::new(),
+            recently_completed_actions: HashSet::new(),
+        }
+    }
 }
 
 impl SchedulerState {
@@ -272,7 +282,7 @@ impl SchedulerState {
         Ok(rx)
     }
 
-    fn clean_expired_completed_actions(&mut self, expiry_time: SystemTime) {
+    fn clean_recently_completed_actions(&mut self, expiry_time: SystemTime) {
         self.recently_completed_actions
             .retain(|action| action.completed_time > expiry_time);
     }
@@ -297,7 +307,13 @@ impl SchedulerState {
             .map(Self::subscribe_to_channel)
     }
 
-    fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, max_job_retries: usize, err: Error) {
+    fn retry_action(
+        &mut self,
+        action_info: &Arc<ActionInfo>,
+        worker_id: &WorkerId,
+        max_job_retries: usize,
+        err: Error,
+    ) {
         match self.active_actions.remove(action_info) {
             Some(running_action) => {
                 let mut awaited_action = running_action;
@@ -372,7 +388,11 @@ impl SchedulerState {
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
-    fn do_try_match(&mut self, allocation_strategy: WorkerAllocationStrategy, max_job_retries: usize) {
+    fn do_try_match(
+        &mut self,
+        allocation_strategy: WorkerAllocationStrategy,
+        max_job_retries: usize,
+    ) {
         // TODO(blaise.bruer) This is a bit difficult because of how rust's borrow checker gets in
         // the way. We need to conditionally remove items from the `queued_action`. Rust is working
         // to add `drain_filter`, which would in theory solve this problem, but because we need
@@ -388,10 +408,10 @@ impl SchedulerState {
                 );
                 continue;
             };
-            let Some(worker) = self.workers.find_worker_for_action_mut(
-                awaited_action,
-                allocation_strategy
-            ) else {
+            let Some(worker) = self
+                .workers
+                .find_worker_for_action_mut(awaited_action, allocation_strategy)
+            else {
                 // No worker found, check the next action to see if there's a
                 // matching one for that.
                 continue;
@@ -497,7 +517,7 @@ impl SchedulerState {
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
-        max_job_retries: usize
+        max_job_retries: usize,
     ) -> Result<(), Error> {
         if !action_stage.has_action_result() {
             let err = make_err!(
@@ -568,64 +588,45 @@ impl SchedulerState {
     }
 }
 
+pub enum DatabaseAdapterType {
+    Redis,
+    Postgres,
+}
+
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
-pub struct StateManager {
+pub struct DbAdapter {
     inner: Arc<Mutex<SchedulerState>>,
-    tasks_or_workers_change_notify: Arc<Notify>
+    _adapter_type: DatabaseAdapterType,
 }
 
-impl StateManager {
+impl Default for DbAdapter {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SchedulerState::default())),
+            _adapter_type: DatabaseAdapterType::Redis,
+        }
+    }
+}
+impl DbAdapter {
     #[inline]
     #[must_use]
-    pub fn new(tasks_or_workers_change_notify: Arc<Notify>) -> Self {
-        let state = Arc::new(Mutex::new(SchedulerState {
-            queued_actions_set: HashSet::new(),
-            queued_actions: BTreeMap::new(),
-            workers: Workers::new(),
-            active_actions: HashMap::new(),
-            recently_completed_actions: HashSet::new(),
-        }));
+    pub fn new(_adapter_type: DatabaseAdapterType) -> Self {
+        let state = Arc::new(Mutex::new(SchedulerState::default()));
         Self {
             inner: state,
-            tasks_or_workers_change_notify
+            _adapter_type,
         }
     }
 
-    pub fn create_new_state(&self) {
-
-    }
-
-    pub fn do_try_match(&self, allocation_strategy: WorkerAllocationStrategy, max_job_retries: usize) {
+    pub fn do_try_match(
+        &self,
+        allocation_strategy: WorkerAllocationStrategy,
+        max_job_retries: usize,
+    ) {
         let mut inner = self.get_inner_lock();
         inner.do_try_match(allocation_strategy, max_job_retries)
-    }
-
-
-    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
-    #[must_use]
-    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.get_inner_lock();
-        inner.workers.workers.contains(worker_id)
-    }
-
-    /// Checks to see if the worker can accept work. Should only be used in unit tests.
-    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
-        let mut inner = self.get_inner_lock();
-        let worker = inner.workers.workers.get_mut(worker_id).ok_or_else(|| {
-            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-        })?;
-        Ok(worker.can_accept_work())
-    }
-
-    /// A unit test function used to send the keep alive message to the worker from the server.
-    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.get_inner_lock();
-        let worker = inner.workers.workers.get_mut(worker_id).ok_or_else(|| {
-            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-        })?;
-        worker.keep_alive()
     }
 
     fn get_inner_lock(&self) -> MutexGuard<'_, SchedulerState> {
@@ -638,9 +639,7 @@ impl StateManager {
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut inner = self.get_inner_lock();
-        let res = inner.add_action(action_info);
-        self.tasks_or_workers_change_notify.notify_one();
-        res
+        inner.add_action(action_info)
     }
 
     pub async fn find_existing_action(
@@ -654,7 +653,8 @@ impl StateManager {
     }
 
     pub async fn clean_recently_completed_actions(&self, expiry_time: SystemTime) {
-        self.get_inner_lock().clean_expired_completed_actions(expiry_time);
+        self.get_inner_lock()
+            .clean_recently_completed_actions(expiry_time);
     }
 
     pub async fn add_worker(&self, worker: Worker, max_job_retries: usize) -> Result<(), Error> {
@@ -667,7 +667,6 @@ impl StateManager {
         if let Err(err) = &res {
             inner.immediate_evict_worker(&worker_id, max_job_retries, err.clone());
         }
-        self.tasks_or_workers_change_notify.notify_one();
         res
     }
 
@@ -679,12 +678,12 @@ impl StateManager {
         err: Error,
     ) {
         let mut inner = self.get_inner_lock();
-        inner.update_action_with_internal_error(worker_id, action_info_hash_key, max_job_retries, err);
-        self.tasks_or_workers_change_notify.notify_one();
-    }
-
-    pub fn get_task_worker_change_notify_handle(&self) -> Arc<Notify> {
-        self.tasks_or_workers_change_notify.clone()
+        inner.update_action_with_internal_error(
+            worker_id,
+            action_info_hash_key,
+            max_job_retries,
+            err,
+        );
     }
 
     pub async fn update_action(
@@ -692,13 +691,15 @@ impl StateManager {
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
-        max_job_retries: usize
+        max_job_retries: usize,
     ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock();
-        let res = inner.update_action(worker_id, action_info_hash_key, action_stage, max_job_retries);
-        self.tasks_or_workers_change_notify.notify_one();
-        res
-
+        inner.update_action(
+            worker_id,
+            action_info_hash_key,
+            action_stage,
+            max_job_retries,
+        )
     }
 
     pub async fn worker_keep_alive_received(
@@ -720,12 +721,14 @@ impl StateManager {
             max_job_retries,
             make_err!(Code::Internal, "Received request to remove worker"),
         );
-
-        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
-        self.tasks_or_workers_change_notify.notify_one();
     }
 
-    pub async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp, worker_timeout_s: u64, max_job_retries: usize) -> Result<(), Error> {
+    pub async fn remove_timedout_workers(
+        &self,
+        now_timestamp: WorkerTimestamp,
+        worker_timeout_s: u64,
+        max_job_retries: usize,
+    ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock();
         // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire
         // map most of the time.
@@ -750,20 +753,15 @@ impl StateManager {
             warn!("{:?}", err);
             inner.immediate_evict_worker(worker_id, max_job_retries, err);
         }
-        self.tasks_or_workers_change_notify.notify_one();
-
         Ok(())
     }
 
-    pub async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+    pub async fn set_drain_worker(
+        &self,
+        worker_id: WorkerId,
+        is_draining: bool,
+    ) -> Result<(), Error> {
         let mut inner = self.get_inner_lock();
-        let res = inner.set_drain_worker(worker_id, is_draining);
-        self.tasks_or_workers_change_notify.notify_one();
-        res
-    }
-
-    pub fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
-        // We do not register anything here because we only want to register metrics
-        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
+        inner.set_drain_worker(worker_id, is_draining)
     }
 }

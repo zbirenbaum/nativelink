@@ -13,24 +13,22 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time:: SystemTime;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::Future;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionStage, ActionState,
-};
-use nativelink_util::metrics_utils:: Registry;
-use tokio::sync::{watch, Notify};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
+use nativelink_util::metrics_utils::Registry;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::state_manager::StateManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
-use crate::scheduler_state::StateManager;
 
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
@@ -44,24 +42,21 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
-struct DistributedScheduler {
+pub struct DistributedScheduler {
     inner: Arc<StateManager>,
     platform_property_manager: Arc<PlatformPropertyManager>,
     task_worker_matching_future: JoinHandle<()>,
     retain_completed_for: Duration,
     worker_timeout_s: u64,
-    max_job_retries: usize
+    max_job_retries: usize,
 }
-
-
 
 impl DistributedScheduler {
     #[inline]
     #[must_use]
     pub fn new(
-        scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        scheduler_cfg: &nativelink_config::schedulers::DistributedScheduler,
         state_manager: Arc<StateManager>,
-        tasks_or_workers_change_notify: Arc<Notify>
     ) -> Self {
         Self::new_with_callback(scheduler_cfg, state_manager, || {
             // The cost of running `do_try_match()` is very high, but constant
@@ -79,7 +74,7 @@ impl DistributedScheduler {
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
     >(
-        scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
+        scheduler_cfg: &nativelink_config::schedulers::DistributedScheduler,
         state_manager: Arc<StateManager>,
         on_matching_engine_run: F,
     ) -> Self {
@@ -123,29 +118,13 @@ impl DistributedScheduler {
                         Some(state_manager) => {
                             state_manager.do_try_match(allocation_strategy, max_job_retries);
                         }
-                        None => { return }
+                        None => return,
                     }
                     on_matching_engine_run().await;
                 }
                 // Unreachable.
             }),
         }
-    }
-
-    /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.
-    #[must_use]
-    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        self.inner.contains_worker_for_test(worker_id)
-    }
-
-    /// Checks to see if the worker can accept work. Should only be used in unit tests.
-    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
-        self.inner.can_worker_accept_work_for_test(worker_id)
-    }
-
-    /// A unit test function used to send the keep alive message to the worker from the server.
-    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        self.inner.send_keep_alive_to_worker_for_test(worker_id)
     }
 }
 
@@ -176,7 +155,9 @@ impl ActionScheduler for DistributedScheduler {
         let expiry_time = SystemTime::now()
             .checked_sub(self.retain_completed_for)
             .unwrap();
-        self.inner.clean_recently_completed_actions(expiry_time);
+        self.inner
+            .clean_recently_completed_actions(expiry_time)
+            .await;
     }
 
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
@@ -198,7 +179,14 @@ impl WorkerScheduler for DistributedScheduler {
         action_info_hash_key: &ActionInfoHashKey,
         err: Error,
     ) {
-        self.inner.update_action_with_internal_error(worker_id, action_info_hash_key, self.max_job_retries, err).await
+        self.inner
+            .update_action_with_internal_error(
+                worker_id,
+                action_info_hash_key,
+                self.max_job_retries,
+                err,
+            )
+            .await
     }
 
     async fn update_action(
@@ -207,7 +195,14 @@ impl WorkerScheduler for DistributedScheduler {
         action_info_hash_key: &ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
-        self.inner.update_action(worker_id, action_info_hash_key, action_stage, self.max_job_retries).await
+        self.inner
+            .update_action(
+                worker_id,
+                action_info_hash_key,
+                action_stage,
+                self.max_job_retries,
+            )
+            .await
     }
 
     async fn worker_keep_alive_received(
@@ -215,15 +210,21 @@ impl WorkerScheduler for DistributedScheduler {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        self.inner.worker_keep_alive_received(worker_id, timestamp).await
+        self.inner
+            .worker_keep_alive_received(worker_id, timestamp)
+            .await
     }
 
     async fn remove_worker(&self, worker_id: WorkerId) {
-        self.inner.remove_worker(worker_id, self.max_job_retries).await
+        self.inner
+            .remove_worker(worker_id, self.max_job_retries)
+            .await
     }
 
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        self.inner.remove_timedout_workers(now_timestamp, self.worker_timeout_s, self.max_job_retries).await
+        self.inner
+            .remove_timedout_workers(now_timestamp, self.worker_timeout_s, self.max_job_retries)
+            .await
     }
 
     async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {

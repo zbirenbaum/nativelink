@@ -20,10 +20,15 @@ prost = "0.12.3"
 uuid = { version = "1.8.0", features = ["v4"] }
 futures = "0.3.30"
 hashbrown = "0.14"
+hex = "0.4.3"
 lru = "0.12.3"
 parking_lot = "0.12.1"
 rand = "0.8.5"
+redis = { version = "0.25.2", features = ["aio", "connection-manager", "tokio-comp", "cluster", "cluster-async", "keep-alive"] }
+redis-macros = "0.3.0"
 scopeguard = "1.2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.37.0", features = ["sync", "rt", "parking_lot"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }

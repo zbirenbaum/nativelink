@@ -33,6 +33,8 @@ use nativelink_proto::google::rpc::Status;
 use prost::bytes::Bytes;
 use prost::Message;
 use prost_types::Any;
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Deserialize, Serialize};
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
@@ -47,7 +49,7 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
@@ -117,13 +119,15 @@ impl TryFrom<&str> for ActionInfoHashKey {
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
 /// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
-#[derive(Clone, Debug)]
+#[serde_with::serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
     pub command_digest: DigestInfo,
     /// Digest of the underlying `Directory`.
     pub input_root_digest: DigestInfo,
     /// Timeout of the action.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
     pub timeout: Duration,
     /// The properties rules that must be applied when finding a worker that can run this action.
     pub platform_properties: PlatformProperties,

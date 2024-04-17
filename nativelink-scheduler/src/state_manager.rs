@@ -12,21 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-use std::time::SystemTime;
-
-use crate::db_adapter::DbAdapter;
-use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
+use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::{watch, Notify};
+
+use crate::db_adapter::DatabaseAdapter;
+use crate::db_adapter::DatabaseAdapterType;
+use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
 pub struct StateManager {
-    inner: DbAdapter,
+    inner: DatabaseAdapter,
     tasks_or_workers_change_notify: Arc<Notify>,
 }
 
@@ -35,7 +36,7 @@ impl StateManager {
     #[must_use]
     pub fn new(tasks_or_workers_change_notify: Arc<Notify>) -> Self {
         Self {
-            inner: DbAdapter::default(),
+            inner: DatabaseAdapter::new(DatabaseAdapterType::Redis),
             tasks_or_workers_change_notify,
         }
     }

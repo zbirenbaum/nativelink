@@ -20,6 +20,8 @@ pub mod distributed_scheduler;
 pub mod grpc_scheduler;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
+pub mod redis_adapter;
+pub mod redis_pubsub;
 pub mod simple_scheduler;
 pub mod state_manager;
 pub mod worker;

@@ -27,9 +27,12 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use parking_lot::{Mutex, MutexGuard};
+use rand::rngs::adapter;
+use redis::Client;
 use tokio::sync::watch;
 use tracing::{error, warn};
 
+use crate::redis_adapter::RedisAdapter;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
 /// An action that is being awaited on and last known state.
@@ -596,27 +599,23 @@ pub enum DatabaseAdapterType {
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
-pub struct DbAdapter {
+pub struct DatabaseAdapter {
     inner: Arc<Mutex<SchedulerState>>,
     _adapter_type: DatabaseAdapterType,
+    adapter: RedisAdapter,
 }
 
-impl Default for DbAdapter {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(SchedulerState::default())),
-            _adapter_type: DatabaseAdapterType::Redis,
-        }
-    }
-}
-impl DbAdapter {
+impl DatabaseAdapter {
     #[inline]
     #[must_use]
     pub fn new(_adapter_type: DatabaseAdapterType) -> Self {
         let state = Arc::new(Mutex::new(SchedulerState::default()));
+        let client = redis::Client::open("redis://127.0.0.1").expect("Failed to init client");
+        let adapter = RedisAdapter::new(client);
         Self {
             inner: state,
             _adapter_type,
+            adapter,
         }
     }
 

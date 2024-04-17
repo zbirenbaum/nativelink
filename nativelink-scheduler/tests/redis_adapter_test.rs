@@ -27,10 +27,13 @@ use redis::Client;
 // use connection_manager and awaits to fix
 #[cfg(test)]
 mod redis_adapter_test {
+    use std::str::FromStr;
+
     use pretty_assertions::assert_eq;
 
     use super::*; // Must be declared in every module.
 
+    // Needs to be a transaction.
     #[tokio::test]
     async fn push_action_info_to_redis() -> Result<(), Error> {
         const SALT: u64 = 1000;
@@ -53,12 +56,14 @@ mod redis_adapter_test {
         };
         let client = Client::open("redis://localhost").expect("could not open client");
         let adapter = RedisAdapter::new(client);
-        let res = adapter.lpush("test", action_info);
+        let res = adapter.lpush("test", action_info).await;
         println!("{:?}", &res);
+        let res = adapter.del("test").await;
         assert!(res.is_ok());
         Ok(())
     }
 
+    // Needs to be a transaction.
     #[tokio::test]
     async fn pop_action_info_from_redis() -> Result<(), Error> {
         const SALT: u64 = 1000;
@@ -82,15 +87,54 @@ mod redis_adapter_test {
         let client = Client::open("redis://localhost").unwrap();
         let adapter = RedisAdapter::new(client);
 
-        let res = adapter.lpush("test", action_info.clone());
+        let res = adapter.lpush("test", action_info.clone()).await;
         println!("{:?}", &res);
         assert!(res.is_ok());
 
-        let n = NonZeroUsize::MIN;
-        let res: [ActionInfo; 1] = adapter.lpop("test", Some(n)).expect("Failed to pop");
+        let n = NonZeroUsize::from_str("2").unwrap();
+        let res: [ActionInfo; 2] = adapter.lpop("test", Some(n)).await.expect("Failed to pop");
         let val = res.first().expect("failed to get value");
         println!("{:?}", &res);
         assert_eq!(val.to_owned(), action_info);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn enqueue_action() -> Result<(), Error> {
+        const SALT: u64 = 1000;
+        let action_digest = DigestInfo::new([3u8; 32], 10);
+        let action_info = ActionInfo {
+            command_digest: DigestInfo::new([1u8; 32], 10),
+            input_root_digest: DigestInfo::new([2u8; 32], 10),
+            timeout: Duration::from_secs(1),
+            platform_properties: PlatformProperties::default(),
+            priority: 0,
+            load_timestamp: SystemTime::UNIX_EPOCH,
+            insert_timestamp: SystemTime::UNIX_EPOCH,
+            unique_qualifier: ActionInfoHashKey {
+                instance_name: "foo".to_string(),
+                digest: action_digest,
+                salt: SALT,
+            },
+            skip_cache_lookup: true,
+            digest_function: DigestHasherFunc::Sha256,
+        };
+        let client = Client::open("redis://localhost").unwrap();
+        let adapter = RedisAdapter::new(client);
+        let encoded = hex::encode(action_info.unique_qualifier.get_hash());
+        let enqueue_res = adapter.enqueue(&encoded).await;
+        println!("{:?}", &enqueue_res);
+        assert!(enqueue_res.is_ok());
+        assert_eq!(
+            adapter
+                .hget::<String, String>("active".to_string(), encoded.clone())
+                .await,
+            Ok(encoded.clone())
+        );
+
+        let active_res = adapter.make_active(&encoded).await;
+        println!("{:?}", &active_res);
+        assert!(active_res.is_ok());
         Ok(())
     }
 }

@@ -1,3 +1,6 @@
+use futures::future::{
+    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
+};
 use nativelink_error::{make_err, Error};
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey};
 use redis::aio::{ConnectionManager, MultiplexedConnection};
@@ -13,12 +16,12 @@ use std::marker::{Send, Sync};
 use std::num::NonZeroUsize;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
-struct Container<T: ToRedisArgs + Serialize> {
+struct Container<T: ToRedisArgs + Serialize + Send + Sync + Clone> {
     inner: T,
 }
 
-impl<T: ToRedisArgs + Serialize> Container<T> {
-    pub fn new(v: T) -> Self {
+impl<T: ToRedisArgs + Serialize + Clone + Send + Sync> Container<T> {
+    pub async fn new(v: T) -> Self {
         Self { inner: v }
     }
 }
@@ -26,111 +29,171 @@ pub struct RedisAdapter {
     client: Client,
 }
 
-fn lpush<K: ToRedisArgs + Serialize, V: ToRedisArgs + Serialize>(
-    connection: &mut Connection,
-    key: Container<K>,
-    value: Container<V>,
-) -> RedisResult<u128> {
-    connection.lpush(key, value.inner)
-}
-
-fn lpop<K: ToRedisArgs + Serialize + Debug, V: FromRedisValue + DeserializeOwned>(
-    connection: &mut Connection,
-    key: Container<K>,
-    num: Option<NonZeroUsize>,
-) -> RedisResult<V> {
-    println!("key: {:?}", key);
-    connection.lpop(key, num)
-}
-
-fn get<K: ToRedisArgs + Serialize, V: FromRedisValue + DeserializeOwned>(
-    connection: &mut Connection,
-    key: Container<K>,
-) -> RedisResult<V> {
-    connection.get(key)
-}
-
-fn set<K: ToRedisArgs + Serialize, V: ToRedisArgs + Serialize>(
-    connection: &mut Connection,
-    key: Container<K>,
-    value: Container<V>,
-) -> RedisResult<u128> {
-    connection.set(key, value.inner)
-}
-
-fn del<K: ToRedisArgs + Serialize>(
-    connection: &mut Connection,
-    key: Container<K>,
-) -> RedisResult<u128> {
-    connection.del(key)
-}
-
 impl RedisAdapter {
     pub fn new(client: Client) -> Self {
         Self { client }
     }
 
-    /// Acquire a permit from the open file semaphore and call a raw function.
-    #[inline]
-    pub fn call_with_connection<F, V>(&self, f: F) -> Result<V, Error>
-    where
-        F: FnOnce(&mut Connection) -> Result<V, RedisError>,
-    {
-        let connection = &mut self.client.get_connection().map_err(|_| {
-            make_err!(
-                nativelink_error::Code::Internal,
-                "Error in call_with_connection"
-            )
-        })?;
-        f(connection).map_err(|e| {
-            println!("{:?}", e);
-            make_err!(
-                nativelink_error::Code::Internal,
-                "Error in call_with_connection"
-            )
-        })
-    }
-
-    // pub async fn async_set<K: ToRedisArgs + FromRedisValue + Serialize + Clone + Send + Sync, V: ToRedisArgs + FromRedisValue + Serialize + Clone + Send + Sync>(&self, key: K, value: V) -> RedisResult<u128> {
+    // pub async async fn async_set<K: ToRedisArgs + FromRedisValue + Serialize + Clone + Send + Sync, V: ToRedisArgs + FromRedisValue + Serialize + Clone + Send + Sync>(&self, key: K, value: V) -> RedisResult<u128> {
     //     let connection_manager = &mut self.client.get_multiplexed_tokio_connection().await?;
     //     connection_manager.set(Container::new(key), Container::new(value)).await
     // }
 
-    pub fn lpush<K: ToRedisArgs + Serialize, V: ToRedisArgs + Serialize>(
+    pub async fn lpush<
+        K: ToRedisArgs + Serialize + Send + Sync + Clone,
+        V: ToRedisArgs + Serialize + Send + Sync + Clone,
+    >(
         &self,
         key: K,
         value: V,
     ) -> Result<u128, Error> {
-        self.call_with_connection(|connection| {
-            lpush(connection, Container::new(key), Container::new(value))
-        })
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .lpush(key, value)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call lpush")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
     }
 
-    pub fn lpop<K: ToRedisArgs + Serialize + Debug, V: FromRedisValue + DeserializeOwned>(
+    pub async fn lpop<
+        K: ToRedisArgs + Serialize + Send + Sync + Clone + Debug,
+        V: FromRedisValue + DeserializeOwned,
+    >(
         &self,
         key: K,
         num: Option<NonZeroUsize>,
     ) -> Result<V, Error> {
-        self.call_with_connection(|connection| lpop(connection, Container::new(key), num))
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .lpop(key, num)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call lpop")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
     }
-    pub fn get<K: ToRedisArgs + Serialize, V: FromRedisValue + DeserializeOwned>(
+
+    pub async fn get<
+        K: ToRedisArgs + Serialize + Send + Sync + Clone,
+        V: FromRedisValue + DeserializeOwned,
+    >(
         &self,
         key: K,
     ) -> Result<V, Error> {
-        self.call_with_connection(|connection| get(connection, Container::new(key)))
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .get(key)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call get")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
     }
 
-    pub fn set<K: ToRedisArgs + Serialize, V: ToRedisArgs + Serialize>(
+    pub async fn set<
+        K: ToRedisArgs + Serialize + Send + Sync + Clone,
+        V: ToRedisArgs + Serialize + Send + Sync + Clone,
+    >(
         &self,
         key: K,
         value: V,
     ) -> Result<u128, Error> {
-        self.call_with_connection(|connection| {
-            set(connection, Container::new(key), Container::new(value))
-        })
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .set(key, value)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call set")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
     }
 
-    pub fn del<K: ToRedisArgs + Serialize>(&self, key: K) -> Result<u128, Error> {
-        self.call_with_connection(|connection| del(connection, Container::new(key)))
+    pub async fn hget<
+        K: ToRedisArgs + Serialize + Send + Sync + Clone,
+        V: FromRedisValue + DeserializeOwned,
+    >(
+        &self,
+        table: String,
+        key: K,
+    ) -> Result<V, Error> {
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .hget(table, key)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call get")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
+    }
+
+    pub async fn del<K: ToRedisArgs + Serialize + Send + Sync + Clone>(
+        &self,
+        key: K,
+    ) -> Result<u128, Error> {
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => con
+                .del(key)
+                .await
+                .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call del")),
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
+    }
+
+    pub async fn enqueue<K: ToRedisArgs + Serialize + Send + Sync + Clone>(
+        &self,
+        key: K,
+    ) -> Result<(), Error> {
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => {
+                let mut pipe = redis::pipe();
+                pipe.atomic()
+                    .hset("queued", &key, &key)
+                    .ignore()
+                    .query_async(&mut con)
+                    .await
+                    .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call set"))
+            }
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
+    }
+
+    pub async fn make_active<K: ToRedisArgs + Serialize + Send + Sync + Clone>(
+        &self,
+        key: K,
+    ) -> Result<(), Error> {
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => {
+                let mut pipe = redis::pipe();
+                pipe.atomic()
+                    .hdel("queued", &key)
+                    .hset("active", &key, &key)
+                    .ignore()
+                    .query_async(&mut con)
+                    .await
+                    .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call set"))
+            }
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
     }
 }

@@ -82,6 +82,7 @@ rust_test_suite(
         "//nativelink-store",
         "//nativelink-util",
         "@crates//:futures",
+        "@crates//:hex",
         "@crates//:pretty_assertions",
         "@crates//:prost",
         "@crates//:redis",

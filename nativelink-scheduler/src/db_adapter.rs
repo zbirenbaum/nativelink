@@ -27,11 +27,8 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use parking_lot::{Mutex, MutexGuard};
-use rand::rngs::adapter;
-use redis::Client;
 use tokio::sync::watch;
 use tracing::{error, warn};
-
 use crate::redis_adapter::RedisAdapter;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 
@@ -602,7 +599,7 @@ pub enum DatabaseAdapterType {
 pub struct DatabaseAdapter {
     inner: Arc<Mutex<SchedulerState>>,
     _adapter_type: DatabaseAdapterType,
-    adapter: RedisAdapter,
+    _adapter: RedisAdapter,
 }
 
 impl DatabaseAdapter {
@@ -611,11 +608,11 @@ impl DatabaseAdapter {
     pub fn new(_adapter_type: DatabaseAdapterType) -> Self {
         let state = Arc::new(Mutex::new(SchedulerState::default()));
         let client = redis::Client::open("redis://127.0.0.1").expect("Failed to init client");
-        let adapter = RedisAdapter::new(client);
+        let _adapter = RedisAdapter::new(client);
         Self {
             inner: state,
             _adapter_type,
-            adapter,
+            _adapter,
         }
     }
 

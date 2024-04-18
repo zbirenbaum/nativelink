@@ -25,11 +25,11 @@ use tokio::time::interval;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
-use crate::distributed_scheduler::DistributedScheduler;
+// use crate::distributed_scheduler::DistributedScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 use crate::simple_scheduler::SimpleScheduler;
-use crate::state_manager::StateManager;
+// use crate::state_manager::StateManager;
 use crate::worker_scheduler::WorkerScheduler;
 
 pub type SchedulerFactoryResults = (
@@ -58,12 +58,12 @@ fn inner_scheduler_factory(
     visited_schedulers: &mut HashSet<usize>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        SchedulerConfig::distributed(config) => {
-            let tasks_or_workers_change_notify = Arc::new(Notify::new());
-            let state_manager = Arc::new(StateManager::new(tasks_or_workers_change_notify));
-            let scheduler = Arc::new(DistributedScheduler::new(config, state_manager.clone()));
-            (Some(scheduler.clone()), Some(scheduler))
-        }
+        // SchedulerConfig::distributed(config) => {
+        //     let tasks_or_workers_change_notify = Arc::new(Notify::new());
+        //     let state_manager = Arc::new(StateManager::new(tasks_or_workers_change_notify));
+        //     let scheduler = Arc::new(DistributedScheduler::new(config, state_manager.clone()));
+        //     (Some(scheduler.clone()), Some(scheduler))
+        // }
         SchedulerConfig::simple(config) => {
             let scheduler = Arc::new(SimpleScheduler::new(config));
             (Some(scheduler.clone()), Some(scheduler))

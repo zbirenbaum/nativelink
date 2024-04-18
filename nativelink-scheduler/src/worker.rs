@@ -26,13 +26,14 @@ use nativelink_util::metrics_utils::{
     CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 pub type WorkerTimestamp = u64;
 
 /// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 pub struct WorkerId(pub u128);
 
 impl std::fmt::Display for WorkerId {

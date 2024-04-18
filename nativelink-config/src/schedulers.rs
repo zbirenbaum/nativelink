@@ -23,7 +23,7 @@ use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     simple(SimpleScheduler),
-    distributed(DistributedScheduler),
+    // distributed(DistributedScheduler),
     grpc(GrpcScheduler),
     cache_lookup(CacheLookupScheduler),
     property_modifier(PropertyModifierScheduler),

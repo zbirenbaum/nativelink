@@ -68,19 +68,19 @@ pub fn publish_message<T: serde::ser::Serialize>(
 pub fn subscribe<T: serde::de::DeserializeOwned + std::fmt::Debug>(
     channel: String,
 ) -> Result<(), Box<dyn Error>> {
-    let _ = tokio::spawn(async move {
-        let client = redis::Client::open("redis://localhost").unwrap();
-        let mut con = client.get_connection().unwrap();
-        let _: () = con
-            .subscribe(&[channel], |msg| {
-                let received: String = msg.get_payload().unwrap();
-                let message_obj = serde_json::from_str::<Message<T>>(&received).unwrap();
-                handle(message_obj);
-
-                return ControlFlow::Continue;
-            })
-            .unwrap();
-    });
+    // let _ = tokio::spawn(async move {
+    //     let client = redis::Client::open("redis://localhost").unwrap();
+    //     let mut con = client.get_connection().unwrap();
+    //     let _: () = con
+    //         .subscribe(&[channel], |msg| {
+    //             let received: String = msg.get_payload().unwrap();
+    //             let message_obj = serde_json::from_str::<Message<T>>(&received).unwrap();
+    //             handle(message_obj);
+    //
+    //             return ControlFlow::Continue;
+    //         })
+    //         .unwrap();
+    // });
 
     Ok(())
 }

@@ -1,19 +1,101 @@
-use futures::future::{
-    try_join, try_join3, try_join_all, BoxFuture, Future, FutureExt, TryFutureExt,
-};
-use nativelink_error::{make_err, Error};
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey};
-use redis::aio::{ConnectionManager, MultiplexedConnection};
+use futures::Future;
+use nativelink_error::{make_err, Code, Error};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, EncodedActionName};
+use redis::aio::MultiplexedConnection;
 use redis::{
-    AsyncCommands, Client, Commands, Connection, FromRedisValue, PubSubCommands, RedisError,
-    RedisResult, ToRedisArgs,
+    AsyncCommands, Client, FromRedisValue, Pipeline, RedisResult, ToRedisArgs
 };
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::marker::{Send, Sync};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+
+use crate::redis_adapter_helpers::{ActionFingerprint, UniqueId, ActionUniqueId};
+
+#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize)]
+
+/*
+Action flow:
+    1. Action is submitted
+    2. return a subscriber which will receive the result on completion
+        - subscribe_to_action(ActionUniqueId)
+        - channel: action:state:${ActionUniqueId}
+    3. Check ExistingActions for ActionUniqueId matching EncodedActionName
+        - If not present:
+            1. Add to ExistingActions
+            2. Push to PendingActionsQueue
+            3. Set ActionStageMap(ActionUniqueId) to ActionStage::Pending
+    4. Get the action stage
+        - ActionStageMap(ActionUniqueId)
+    5. Publish the stage from 4
+        - publish_to_action(action:state:${ActionUniqueId}, action_stage)
+    6. whenever update_action_state(ActionInfoHashKey) is called:
+        - get the encoded db key: ActionInfoHashKey::into<EncodedActionName>
+        - find the ActionUniqueId for said key
+            - if it doesn't exist:
+
+                action was dropped and needs to be retried
+        - publish the action stage to the action channel using the ActionUniqueId
+*/
+enum RedisLookup {
+    // Hashmap<EncodedActionName, ActionUniqueId>
+    ExistingActions,
+    // List of actions waiting to run
+    PendingActionsQueue,
+    // Hashmap<ActionUniqueId, ActionInfo>
+    QueuedActionsMap,
+    // Hashmap<ActionUniqueId, ActionInfo>
+    ActiveActionsMap,
+    // List of ActionUniqueId corresponding to completed actions.
+    CompletedActionsList,
+    // Hashmap<ActionUniqueId, ActionResult>
+    CompletedActionMap,
+    // Hashmap<ActionUniqueId, ActionStage>
+    ActionStageMap,
+    // Number of times retry has been attempted for an action
+    // K: ${ActionUniqueId}:attempts, V: number
+    ActionRetries
+}
+
+impl RedisLookup {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExistingActions => "actions:existing",
+            Self::PendingActionsQueue => "actions:queued:list",
+            Self::QueuedActionsMap => "actions:queued:map",
+            Self::ActiveActionsMap => "actions:active:map",
+            Self::CompletedActionsList => "actions:completed:list",
+            Self::CompletedActionMap => "actions:completed:map",
+            Self::ActionStageMap => "actions:stage:map",
+            Self::ActionRetries => "actions:retries"
+        }
+    }
+}
+
+fn add_action<'a, K: ToRedisArgs + Serialize + Send + Sync + Clone>(
+    connection: &'a mut MultiplexedConnection,
+    pipe: &'a mut Pipeline,
+    key: K
+) -> impl Future<Output = RedisResult<()>> + 'a {
+    pipe.atomic()
+        .hdel("action_queue", &key)
+        .hset("active", &key, &key)
+        .ignore()
+        .query_async(connection)
+}
+fn append_enqueue<'a, K: ToRedisArgs + Serialize + Send + Sync + Clone>(
+    connection: &'a mut MultiplexedConnection,
+    pipe: &'a mut Pipeline,
+    key: K
+) -> impl Future<Output = RedisResult<()>> + 'a {
+    pipe.atomic()
+        .hdel("action_queue", &key)
+        .hset("active", &key, &key)
+        .ignore()
+        .query_async(connection)
+}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 struct Container<T: ToRedisArgs + Serialize + Send + Sync + Clone> {
@@ -196,4 +278,42 @@ impl RedisAdapter {
             )),
         }
     }
+
+    pub async fn add_new_action(&self, action_info: Arc<ActionInfo>) -> Result<(), Error> {
+        let action_fingerprint = ActionFingerprint::new(&action_info.unique_qualifier);
+        match self.client.get_multiplexed_tokio_connection().await {
+            Ok(mut con) => {
+                let mut pipe = redis::pipe();
+                pipe.atomic()
+                    .hset(
+                        "id_action_name_map",
+                        &action_fingerprint.get_unique_id(),
+                        &action_fingerprint.get_encoded_action_name()
+                    )
+                    .hset(
+                        "action_name_id_map",
+                        &action_fingerprint.get_encoded_action_name(),
+                        &action_fingerprint.get_unique_id()
+                    )
+                    .ignore()
+                    .query_async(&mut con)
+                    .await
+                    .map_err(|_| make_err!(nativelink_error::Code::Internal, "Failed to call set"))
+            }
+            Err(_) => Err(make_err!(
+                nativelink_error::Code::Internal,
+                "Failed to create connection"
+            )),
+        }
+
+    }
+
+    // We need to be able to check the values of individual platform properties.
+    // We also need to be able to find all the relevant platform properties for
+    // a given job or worker.
+    // The way to do this is to generate keys based on the following:
+    // UniqueId: the WorkerId or hex encoded ActionInfoHashKey hash
+    // the platform properties
+    // a list containing the platform property keys
+    // pub async fn store_platform_properties<id: UniqueId, platform_properties:
 }

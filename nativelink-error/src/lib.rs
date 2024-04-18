@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use prost_types::TimestampError;
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Deserialize, Serialize};
 
 #[macro_export]
 macro_rules! make_err {
@@ -40,7 +42,7 @@ macro_rules! error_if {
     }};
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct Error {
     pub code: Code,
     pub messages: Vec<String>,
@@ -296,7 +298,9 @@ impl<T> ResultExt<T> for Option<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToRedisArgs, FromRedisValue,
+)]
 #[non_exhaustive] // New Codes may be added in the future, so never exhaustively match!
 pub enum Code {
     Ok = 0,

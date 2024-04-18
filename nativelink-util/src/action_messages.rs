@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-
 use blake3::Hasher as Blake3Hasher;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -35,6 +34,7 @@ use prost::Message;
 use prost_types::Any;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
@@ -111,6 +111,27 @@ impl TryFrom<&str> for ActionInfoHashKey {
             digest,
             salt,
         })
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
+pub struct EncodedActionName(String);
+// Make a string encoded to hex that can be used to go back and forth
+// from ActionInfoHashKey
+impl From<&ActionInfoHashKey> for EncodedActionName {
+    fn from(unique_qualifier: &ActionInfoHashKey) -> Self {
+        Self(hex::encode(unique_qualifier.action_name()))
+    }
+}
+
+impl TryFrom<&EncodedActionName> for ActionInfoHashKey {
+    type Error = Error;
+    fn try_from(action_name: &EncodedActionName) -> Result<ActionInfoHashKey, Error> {
+        let name = action_name.clone();
+        let decoded = hex::decode(name.0)?;
+        let string_value = String::from_utf8(decoded)
+            .map_err(|_| make_input_err!("Error creating string from utf8"))?;
+        ActionInfoHashKey::try_from(string_value.as_str())
     }
 }
 
@@ -296,7 +317,7 @@ impl Eq for ActionInfoHashKey {}
 /// This is in order to be able to reuse the same struct instead of building different
 /// structs when converting `FileInfo` -> {`OutputFile`, `FileNode`} and other similar
 /// structs.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub enum NameOrPath {
     Name(String),
     Path(String),
@@ -325,7 +346,7 @@ impl Ord for NameOrPath {
 /// Represents an individual file and associated metadata.
 /// This struct must be 100% compatible with `OutputFile` and `FileNode` structs
 /// in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct FileInfo {
     pub name_or_path: NameOrPath,
     pub digest: DigestInfo,
@@ -380,7 +401,7 @@ impl From<FileInfo> for OutputFile {
 
 /// Represents an individual symlink file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct SymlinkInfo {
     pub name_or_path: NameOrPath,
     pub target: String,
@@ -438,7 +459,7 @@ impl From<SymlinkInfo> for OutputSymlink {
 
 /// Represents an individual directory file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct DirectoryInfo {
     pub path: String,
     pub tree_digest: DigestInfo,
@@ -470,7 +491,7 @@ impl From<DirectoryInfo> for OutputDirectory {
 
 /// Represents the metadata associated with the execution result.
 /// This struct must be 100% compatible with `ExecutedActionMetadata`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ExecutionMetadata {
     pub worker: String,
     pub queued_timestamp: SystemTime,
@@ -589,7 +610,7 @@ pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
 /// Represents the results of an execution.
 /// This struct must be 100% compatible with `ActionResult` in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ActionResult {
     pub output_files: Vec<FileInfo>,
     pub output_folders: Vec<DirectoryInfo>,
@@ -632,12 +653,11 @@ impl Default for ActionResult {
         }
     }
 }
-
 // TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
 // a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
-#[derive(PartialEq, Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -652,6 +672,7 @@ pub enum ActionStage {
     /// Worker completed the work with result.
     Completed(ActionResult),
     /// Result was found from cache, don't decode the proto just to re-encode it.
+    #[serde(skip)]
     CompletedFromCache(ProtoActionResult),
 }
 
@@ -663,6 +684,16 @@ impl ActionStage {
         }
     }
 
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::CacheCheck => "CacheCheck",
+            Self::Queued => "Queued",
+            Self::Executing => "Executing",
+            Self::Completed(_) => "Completed",
+            Self::CompletedFromCache(_) => "CompletedFromCache",
+        }
+    }
     /// Returns true if the worker considers the action done and no longer needs to be tracked.
     // Note: This function is separate from `has_action_result()` to not mix the concept of
     //       "finished" with "has a result".
@@ -1021,7 +1052,7 @@ impl TryFrom<Operation> for ActionState {
 
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ActionState {
     pub stage: ActionStage,
     pub unique_qualifier: ActionInfoHashKey,

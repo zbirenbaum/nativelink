@@ -56,9 +56,9 @@ mod redis_adapter_test {
         };
         let client = Client::open("redis://localhost").expect("could not open client");
         let adapter = RedisAdapter::new(client);
-        let res = adapter.lpush("test", action_info).await;
+        let res = adapter.lpush("test0", action_info).await;
         println!("{:?}", &res);
-        let res = adapter.del("test").await;
+        let res = adapter.del("test0").await;
         assert!(res.is_ok());
         Ok(())
     }
@@ -87,12 +87,12 @@ mod redis_adapter_test {
         let client = Client::open("redis://localhost").unwrap();
         let adapter = RedisAdapter::new(client);
 
-        let res = adapter.lpush("test", action_info.clone()).await;
+        let res = adapter.lpush("test1", action_info.clone()).await;
         println!("{:?}", &res);
         assert!(res.is_ok());
 
-        let n = NonZeroUsize::from_str("2").unwrap();
-        let res: [ActionInfo; 2] = adapter.lpop("test", Some(n)).await.expect("Failed to pop");
+        let n = NonZeroUsize::from_str("1").unwrap();
+        let res: [ActionInfo; 1] = adapter.lpop("test1", Some(n)).await.expect("Failed to pop");
         let val = res.first().expect("failed to get value");
         println!("{:?}", &res);
         assert_eq!(val.to_owned(), action_info);

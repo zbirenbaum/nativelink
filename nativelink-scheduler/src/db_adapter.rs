@@ -27,8 +27,6 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
 };
 use parking_lot::{Mutex, MutexGuard};
-use rand::rngs::adapter;
-use redis::Client;
 use tokio::sync::watch;
 use tracing::{error, warn};
 

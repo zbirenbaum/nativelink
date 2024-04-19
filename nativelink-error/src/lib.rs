@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use prost_types::TimestampError;
+use redis::RedisError;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 
@@ -324,6 +325,14 @@ pub enum Code {
     // in both match statements in retry.rs.
 }
 
+impl From<RedisError> for Error {
+    fn from(value: RedisError) -> Self {
+        Self {
+            code: Code::Internal,
+            messages: vec![value.to_string()],
+        }
+    }
+}
 impl From<i32> for Code {
     fn from(code: i32) -> Self {
         match code {

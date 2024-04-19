@@ -20,6 +20,7 @@ pub mod grpc_scheduler;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
 // pub mod db_adapter;
+pub mod redis_v2;
 // pub mod redis_adapter;
 // pub mod redis_adapter_helpers;
 // pub mod redis_pubsub;

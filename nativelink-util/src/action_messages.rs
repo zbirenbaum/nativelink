@@ -115,24 +115,31 @@ impl TryFrom<&str> for ActionInfoHashKey {
 }
 
 #[derive(Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
-pub struct EncodedActionName(String);
+pub struct ActionName(String);
 
-impl EncodedActionName {
+impl ActionName {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }
 // Make a string encoded to hex that can be used to go back and forth
 // from ActionInfoHashKey
-impl From<&ActionInfoHashKey> for EncodedActionName {
+impl From<&ActionInfoHashKey> for ActionName {
     fn from(unique_qualifier: &ActionInfoHashKey) -> Self {
         Self(hex::encode(unique_qualifier.action_name()))
     }
 }
 
-impl TryFrom<&EncodedActionName> for ActionInfoHashKey {
+// Make a string encoded to hex that can be used to go back and forth
+// from ActionInfoHashKey
+impl From<&ActionInfo> for ActionName {
+    fn from(action_info: &ActionInfo) -> Self {
+        Self::from(&action_info.unique_qualifier)
+    }
+}
+impl TryFrom<&ActionName> for ActionInfoHashKey {
     type Error = Error;
-    fn try_from(action_name: &EncodedActionName) -> Result<ActionInfoHashKey, Error> {
+    fn try_from(action_name: &ActionName) -> Result<ActionInfoHashKey, Error> {
         let name = action_name.clone();
         let decoded = hex::decode(name.0)?;
         let string_value = String::from_utf8(decoded)
@@ -141,7 +148,7 @@ impl TryFrom<&EncodedActionName> for ActionInfoHashKey {
     }
 }
 
-impl std::fmt::Display for EncodedActionName {
+impl std::fmt::Display for ActionName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }

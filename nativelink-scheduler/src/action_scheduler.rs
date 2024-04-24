@@ -16,10 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
+use nativelink_util::action_messages::{ActionInfo, OperationId, ActionState};
 use nativelink_util::metrics_utils::Registry;
 use tokio::sync::watch;
-
 use crate::platform_property_manager::PlatformPropertyManager;
 
 /// ActionScheduler interface is responsible for interactions between the scheduler
@@ -32,6 +31,8 @@ pub trait ActionScheduler: Sync + Send + Unpin {
         instance_name: &str,
     ) -> Result<Arc<PlatformPropertyManager>, Error>;
 
+
+    // Find action w/ add if didn't exist
     /// Adds an action to the scheduler for remote execution.
     async fn add_action(
         &self,
@@ -41,7 +42,7 @@ pub trait ActionScheduler: Sync + Send + Unpin {
     /// Find an existing action by its name.
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        action_id: &OperationId,
     ) -> Option<watch::Receiver<Arc<ActionState>>>;
 
     /// Cleans up the cache of recently completed actions.

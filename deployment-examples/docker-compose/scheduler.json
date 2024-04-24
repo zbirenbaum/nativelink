@@ -22,20 +22,20 @@
     }
   },
   "schedulers": {
+    "supported_platform_properties": {
+      "cpu_count": "minimum",
+      "OSFamily": "priority",
+      "container-image": "priority"
+    },
     "MAIN_SCHEDULER": {
       "simple": {
-        "supported_platform_properties": {
-          "cpu_count": "minimum",
-          "OSFamily": "priority",
-          "container-image": "priority"
-        }
       }
     }
   },
   "servers": [{
     "listener": {
       "http": {
-        "socket_address": "0.0.0.0:50052",
+        "socket_address": "0.0.0.0:50052"
       }
     },
     "services": {

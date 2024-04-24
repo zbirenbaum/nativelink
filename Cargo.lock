@@ -1873,7 +1873,10 @@ dependencies = [
 name = "nativelink-config"
 version = "0.2.0"
 dependencies = [
+ "redis",
+ "redis-macros",
  "serde",
+ "serde_json",
  "shellexpand",
 ]
 
@@ -2042,6 +2045,7 @@ dependencies = [
  "tokio-util",
  "tonic 0.11.0",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

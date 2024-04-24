@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
+    OperationId, ActionInfo, ActionState, DEFAULT_EXECUTION_PRIORITY
 };
 use nativelink_util::grpc_utils::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -237,10 +237,10 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        action_id: &OperationId,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
         let request = WaitExecutionRequest {
-            name: unique_qualifier.action_name(),
+            name: action_id.to_string(),
         };
         let result_stream = self
             .perform_request(request, |request| async move {

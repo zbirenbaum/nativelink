@@ -25,12 +25,13 @@ use hex::FromHex;
 use nativelink_error::{make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use prost::Message;
+use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::task::{JoinError, JoinHandle};
 
 pub use crate::fs;
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, ToRedisArgs, FromRedisValue)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.

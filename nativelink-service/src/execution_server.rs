@@ -28,6 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
+use nativelink_scheduler::redis_subscriber::{PubSubReciever};
 use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
@@ -182,7 +183,7 @@ impl ExecutionServer {
         Server::new(self)
     }
 
-    fn to_execute_stream(receiver: watch::Receiver<Arc<ActionState>>) -> Response<ExecuteStream> {
+    fn to_execute_stream(receiver: PubSubReciever<ActionState>) -> Response<ExecuteStream> {
         let receiver_stream = Box::pin(WatchStream::new(receiver).map(|action_update| {
             info!("\x1b[0;31mexecute Resp Stream\x1b[0m: {:?}", action_update);
             Ok(Into::<Operation>::into(action_update.as_ref().clone()))

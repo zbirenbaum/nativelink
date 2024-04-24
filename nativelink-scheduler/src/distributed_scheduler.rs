@@ -13,232 +13,154 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::Future;
+use hashbrown::HashMap;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId};
 use nativelink_util::metrics_utils::Registry;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::Duration;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::state_manager::StateManager;
+// use crate::state_manager::StateManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
-/// Default timeout for workers in seconds.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
-
-/// Default timeout for recently completed actions in seconds.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
-
-/// Default times a job can retry before failing.
-/// If this changes, remember to change the documentation in the config.
-const DEFAULT_MAX_JOB_RETRIES: usize = 3;
-
-pub struct DistributedScheduler {
-    inner: Arc<StateManager>,
-    platform_property_manager: Arc<PlatformPropertyManager>,
-    task_worker_matching_future: JoinHandle<()>,
-    retain_completed_for: Duration,
-    worker_timeout_s: u64,
-    max_job_retries: usize,
+pub struct ActionSchedulerInstance {
+    state_manager: Arc<StateManager>,
 }
 
-impl DistributedScheduler {
-    #[inline]
-    #[must_use]
+
+impl ActionSchedulerInstance {
     pub fn new(
-        scheduler_cfg: &nativelink_config::schedulers::DistributedScheduler,
-        state_manager: Arc<StateManager>,
+        scheduler_cfg: &nativelink_config::schedulers::ActionSchedulerInstance,
     ) -> Self {
-        Self::new_with_callback(scheduler_cfg, state_manager, || {
-            // The cost of running `do_try_match()` is very high, but constant
-            // in relation to the number of changes that have happened. This means
-            // that grabbing this lock to process `do_try_match()` should always
-            // yield to any other tasks that might want the lock. The easiest and
-            // most fair way to do this is to sleep for a small amount of time.
-            // Using something like tokio::task::yield_now() does not yield as
-            // aggresively as we'd like if new futures are scheduled within a future.
-            tokio::time::sleep(Duration::from_millis(1))
-        })
-    }
-
-    pub fn new_with_callback<
-        Fut: Future<Output = ()> + Send,
-        F: Fn() -> Fut + Send + Sync + 'static,
-    >(
-        scheduler_cfg: &nativelink_config::schedulers::DistributedScheduler,
-        state_manager: Arc<StateManager>,
-        on_matching_engine_run: F,
-    ) -> Self {
-        let platform_property_manager = Arc::new(PlatformPropertyManager::new(
-            scheduler_cfg
-                .supported_platform_properties
-                .clone()
-                .unwrap_or_default(),
-        ));
-
-        let mut worker_timeout_s = scheduler_cfg.worker_timeout_s;
-        if worker_timeout_s == 0 {
-            worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
-        }
-
-        let mut retain_completed_for_s = scheduler_cfg.retain_completed_for_s;
-        if retain_completed_for_s == 0 {
-            retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-        }
-
-        let mut max_job_retries = scheduler_cfg.max_job_retries;
-        if max_job_retries == 0 {
-            max_job_retries = DEFAULT_MAX_JOB_RETRIES;
-        }
-
-        let tasks_or_workers_change_notify = state_manager.get_task_worker_change_notify_handle();
-
-        let weak_inner = Arc::downgrade(&state_manager).clone();
-        let allocation_strategy = scheduler_cfg.allocation_strategy;
         Self {
-            inner: state_manager,
-            platform_property_manager,
-            retain_completed_for: Duration::new(retain_completed_for_s, 0),
-            worker_timeout_s,
-            max_job_retries,
-            task_worker_matching_future: tokio::spawn(async move {
-                // Break out of the loop only when the inner is dropped.
-                loop {
-                    tasks_or_workers_change_notify.notified().await;
-                    match weak_inner.upgrade() {
-                        Some(state_manager) => {
-                            state_manager.do_try_match(allocation_strategy, max_job_retries);
-                        }
-                        None => return,
-                    }
-                    on_matching_engine_run().await;
-                }
-                // Unreachable.
-            }),
+            state_manager: Arc::new(StateManager::new(
+                scheduler_cfg.db_url.clone(),
+                scheduler_cfg.supported_platform_properties
+                    .clone()
+                    .unwrap_or_default()
+            )),
         }
     }
 }
 
 #[async_trait]
-impl ActionScheduler for DistributedScheduler {
-    async fn get_platform_property_manager(
-        &self,
-        _instance_name: &str,
-    ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        Ok(self.platform_property_manager.clone())
-    }
-
+impl ActionScheduler for ActionSchedulerInstance {
     async fn add_action(
         &self,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        self.inner.add_action(action_info).await
+        self.state_manager.add_action(action_info).await
     }
 
+    /// Returns the platform property manager.
+    async fn get_platform_property_manager(
+        &self,
+        _instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        todo!()
+    }
+
+    /// Find an existing action by its name.
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
+        _action_id: &OperationId,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.inner.find_existing_action(unique_qualifier).await
+        todo!()
     }
 
+    /// Cleans up the cache of recently completed actions.
     async fn clean_recently_completed_actions(&self) {
-        let expiry_time = SystemTime::now()
-            .checked_sub(self.retain_completed_for)
-            .unwrap();
-        self.inner
-            .clean_recently_completed_actions(expiry_time)
-            .await;
+        todo!()
     }
 
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+    /// Register the metrics for the action scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
+
+        todo!()
+    }
+}
+
+pub struct WorkerSchedulerInstance {
+    state_manager: Arc<StateManager>,
+}
+
+impl WorkerSchedulerInstance {
+    pub fn new(
+        scheduler_cfg: &nativelink_config::schedulers::WorkerSchedulerInstance) -> Self {
+        Self {
+            state_manager: Arc::new(StateManager::new(
+                scheduler_cfg.db_url.clone(),
+                scheduler_cfg.supported_platform_properties
+                    .clone()
+                    .unwrap_or_default()
+            )),
+        }
+    }
 }
 
 #[async_trait]
-impl WorkerScheduler for DistributedScheduler {
+impl WorkerScheduler for WorkerSchedulerInstance {
+    /// Returns the platform property manager.
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
-        self.platform_property_manager.as_ref()
+        todo!()
     }
 
-    async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        self.inner.add_worker(worker, self.max_job_retries).await
+    /// Adds a worker to the scheduler and begin using it to execute actions (when able).
+    async fn add_worker(&self, _worker: Worker) -> Result<(), Error> {
+        todo!()
     }
 
+    /// Similar to `update_action()`, but called when there was an error that is not
+    /// related to the task, but rather the worker itself.
     async fn update_action_with_internal_error(
         &self,
-        worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
-        err: Error,
+        _worker_id: &WorkerId,
+        _action_info_hash_key: &ActionInfoHashKey,
+        _err: Error,
     ) {
-        self.inner
-            .update_action_with_internal_error(
-                worker_id,
-                action_info_hash_key,
-                self.max_job_retries,
-                err,
-            )
-            .await
+        todo!()
     }
 
+    /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
         &self,
-        worker_id: &WorkerId,
-        action_info_hash_key: &ActionInfoHashKey,
-        action_stage: ActionStage,
+        _worker_id: &WorkerId,
+        _action_info_hash_key: &ActionInfoHashKey,
+        _action_stage: ActionStage,
     ) -> Result<(), Error> {
-        self.inner
-            .update_action(
-                worker_id,
-                action_info_hash_key,
-                action_stage,
-                self.max_job_retries,
-            )
-            .await
+        todo!()
     }
 
+    /// Event for when the keep alive message was received from the worker.
     async fn worker_keep_alive_received(
         &self,
-        worker_id: &WorkerId,
-        timestamp: WorkerTimestamp,
+        _worker_id: &WorkerId,
+        _timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        self.inner
-            .worker_keep_alive_received(worker_id, timestamp)
-            .await
+        todo!()
     }
 
-    async fn remove_worker(&self, worker_id: WorkerId) {
-        self.inner
-            .remove_worker(worker_id, self.max_job_retries)
-            .await
+    /// Removes worker from pool and reschedule any tasks that might be running on it.
+    async fn remove_worker(&self, _worker_id: WorkerId) {
+        todo!()
     }
 
-    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        self.inner
-            .remove_timedout_workers(now_timestamp, self.worker_timeout_s, self.max_job_retries)
-            .await
+    /// Removes timed out workers from the pool. This is called periodically by an
+    /// external source.
+    async fn remove_timedout_workers(&self, _now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+        todo!()
     }
 
-    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
-        self.inner.set_drain_worker(worker_id, is_draining).await
+    /// Sets if the worker is draining or not.
+    async fn set_drain_worker(&self, _worker_id: WorkerId, _is_draining: bool) -> Result<(), Error> {
+        todo!()
     }
 
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
-        // We do not register anything here because we only want to register metrics
-        // once and we rely on the `ActionScheduler::register_metrics()` to do that.
-    }
-}
-
-impl Drop for DistributedScheduler {
-    fn drop(&mut self) {
-        self.task_worker_matching_future.abort();
-    }
+    /// Register the metrics for the worker scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
 }

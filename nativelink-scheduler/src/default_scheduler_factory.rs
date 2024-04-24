@@ -20,17 +20,16 @@ use nativelink_config::schedulers::SchedulerConfig;
 use nativelink_error::{Error, ResultExt};
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::metrics_utils::Registry;
-use tokio::sync::Notify;
 use tokio::time::interval;
 
 use crate::action_scheduler::ActionScheduler;
-use crate::cache_lookup_scheduler::CacheLookupScheduler;
-// use crate::distributed_scheduler::DistributedScheduler;
+// use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
-use crate::simple_scheduler::SimpleScheduler;
-// use crate::state_manager::StateManager;
+// use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
+use crate::distributed_scheduler::WorkerSchedulerInstance;
+use crate::distributed_scheduler::ActionSchedulerInstance;
 
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn ActionScheduler>>,
@@ -53,42 +52,41 @@ pub fn scheduler_factory(
 
 fn inner_scheduler_factory(
     scheduler_type_cfg: &SchedulerConfig,
-    store_manager: &StoreManager,
+    _store_manager: &StoreManager,
     maybe_scheduler_metrics: Option<&mut Registry>,
     visited_schedulers: &mut HashSet<usize>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        // SchedulerConfig::distributed(config) => {
-        //     let tasks_or_workers_change_notify = Arc::new(Notify::new());
-        //     let state_manager = Arc::new(StateManager::new(tasks_or_workers_change_notify));
-        //     let scheduler = Arc::new(DistributedScheduler::new(config, state_manager.clone()));
-        //     (Some(scheduler.clone()), Some(scheduler))
-        // }
-        SchedulerConfig::simple(config) => {
-            let scheduler = Arc::new(SimpleScheduler::new(config));
-            (Some(scheduler.clone()), Some(scheduler))
+        SchedulerConfig::action(config) => {
+
+            let action_scheduler = Arc::new(ActionSchedulerInstance::new(config));
+            (Some(action_scheduler), None)
+        }
+        SchedulerConfig::worker(config) => {
+            let worker_scheduler = Arc::new(WorkerSchedulerInstance::new(config));
+            (None, Some(worker_scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
-        SchedulerConfig::cache_lookup(config) => {
-            let cas_store = store_manager
-                .get_store(&config.cas_store)
-                .err_tip(|| format!("'cas_store': '{}' does not exist", config.cas_store))?;
-            let ac_store = store_manager
-                .get_store(&config.ac_store)
-                .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
-                    .err_tip(|| "In nested CacheLookupScheduler construction")?;
-            let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
-                cas_store,
-                ac_store,
-                action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
-            )?);
-            (Some(cache_lookup_scheduler), worker_scheduler)
-        }
+        // SchedulerConfig::cache_lookup(config) => {
+        //     let cas_store = store_manager
+        //         .get_store(&config.cas_store)
+        //         .err_tip(|| format!("'cas_store': '{}' does not exist", config.cas_store))?;
+        //     let ac_store = store_manager
+        //         .get_store(&config.ac_store)
+        //         .err_tip(|| format!("'ac_store': '{}' does not exist", config.ac_store))?;
+        //     let (action_scheduler, worker_scheduler) =
+        //         inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
+        //             .err_tip(|| "In nested CacheLookupScheduler construction")?;
+        //     let cache_lookup_scheduler = Arc::new(CacheLookupScheduler::new(
+        //         cas_store,
+        //         ac_store,
+        //         action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+        //     )?);
+        //     (Some(cache_lookup_scheduler), worker_scheduler)
+        // }
         SchedulerConfig::property_modifier(config) => {
             let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, store_manager, None, visited_schedulers)
+                inner_scheduler_factory(&config.scheduler, _store_manager, None, visited_schedulers)
                     .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 config,

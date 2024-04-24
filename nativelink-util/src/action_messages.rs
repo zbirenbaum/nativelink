@@ -14,7 +14,6 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -35,6 +34,7 @@ use prost_types::Any;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
@@ -44,12 +44,60 @@ use crate::platform_properties::PlatformProperties;
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
+/// Unique id of worker.
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
+pub struct OperationId(pub u128);
+
+impl TryFrom<&str> for OperationId {
+    type Error = Error;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to OperationId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(OperationId(my_uuid.as_u128())),
+        }
+    }
+}
+
+impl std::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let operation_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        write!(f, "{operation_id_str}")
+    }
+}
+
+impl std::fmt::Debug for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let operation_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        f.write_str(operation_id_str)
+    }
+}
+
+impl TryFrom<String> for OperationId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(&s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to OperationId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(OperationId(my_uuid.as_u128())),
+        }
+    }
+}
+
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
@@ -114,7 +162,7 @@ impl TryFrom<&str> for ActionInfoHashKey {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
+#[derive(Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue, PartialEq)]
 pub struct ActionName(String);
 
 impl ActionName {
@@ -140,8 +188,8 @@ impl From<&ActionInfo> for ActionName {
 impl TryFrom<&ActionName> for ActionInfoHashKey {
     type Error = Error;
     fn try_from(action_name: &ActionName) -> Result<ActionInfoHashKey, Error> {
-        let name = action_name.clone();
-        let decoded = hex::decode(name.0)?;
+        let name = action_name.0.clone();
+        let decoded = hex::decode(name)?;
         let string_value = String::from_utf8(decoded)
             .map_err(|_| make_input_err!("Error creating string from utf8"))?;
         ActionInfoHashKey::try_from(string_value.as_str())
@@ -1046,24 +1094,15 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        let unique_qualifier = if let Ok(v) = operation.name.as_str().try_into() {
-            v
-        } else {
-            // This branch might happen in a case where we are forwarding an operation from
-            // one remote execution system to another that does not use our operation name
-            // format (ie: very unlikely, but possible).
-            let mut hasher = DefaultHasher::new();
-            operation.name.hash(&mut hasher);
-            ActionInfoHashKey {
-                instance_name: "UNKNOWN_INSTANCE_NAME_INOPERATION_CONVERSION".to_string(),
-                digest: action_digest,
-                salt: hasher.finish(),
-            }
-        };
+        let operation_id: OperationId = operation
+            .name
+            .as_str()
+            .try_into()?;
 
         Ok(Self {
-            unique_qualifier,
+            operation_id,
             stage,
+            action_digest
         })
     }
 }
@@ -1073,13 +1112,14 @@ impl TryFrom<Operation> for ActionState {
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ActionState {
     pub stage: ActionStage,
-    pub unique_qualifier: ActionInfoHashKey,
+    pub operation_id: OperationId,
+    pub action_digest: DigestInfo
 }
 
 impl ActionState {
     #[inline]
     pub fn action_digest(&self) -> &DigestInfo {
-        &self.unique_qualifier.digest
+        &self.action_digest
     }
 }
 
@@ -1102,7 +1142,7 @@ impl From<ActionState> for Operation {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&val.unique_qualifier.digest).into()),
+            action_digest: Some((val.action_digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
@@ -1110,7 +1150,7 @@ impl From<ActionState> for Operation {
         };
 
         Self {
-            name: val.unique_qualifier.action_name(),
+            name: val.operation_id.to_string(),
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,

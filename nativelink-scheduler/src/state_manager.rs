@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
+use hashbrown::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{Error, Code};
@@ -33,13 +34,13 @@ impl StateManager {
     #[must_use]
     pub fn new(
         db_url: String,
-        supported_platform_properties: HashMap<String, PropertyType>
+        supported_platform_properties: std::collections::HashMap<String, PropertyType>
     ) -> Self {
 
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             supported_platform_properties
         ));
-        let adapter = Arc::new(RedisAdapter::new(db_url.clone(), platform_property_manager));
+        let adapter = Arc::new(RedisAdapter::new(db_url.clone(), platform_property_manager.get_known_properties().clone()));
         // TODO: Once this works, abstract the RedisAdapter to a DatabaseAdapter enum
         // and dynamically create the correct adapter type
         Self {

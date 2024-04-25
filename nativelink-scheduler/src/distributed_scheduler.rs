@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hashbrown::HashMap;
 use nativelink_error::Error;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId};
 use nativelink_util::metrics_utils::Registry;

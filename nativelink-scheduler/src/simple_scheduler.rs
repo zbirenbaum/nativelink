@@ -27,14 +27,16 @@ use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata, OperationId, ActionName
 };
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
     MetricsComponent, Registry,
 };
-use nativelink_util::platform_properties::PlatformPropertyValue;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use parking_lot::{Mutex, MutexGuard};
+use crate::redis_adapter::RedisAdapter;
+use crate::state_manager::StateManager;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -44,7 +46,6 @@ use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
-
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
@@ -57,36 +58,114 @@ const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
-/// An action that is being awaited on and last known state.
-struct AwaitedAction {
-    action_info: Arc<ActionInfo>,
-    current_state: Arc<ActionState>,
-    notify_channel: watch::Sender<Arc<ActionState>>,
 
-    /// Number of attempts the job has been tried.
-    attempts: usize,
-    /// Possible last error set by the worker. If empty and attempts is set, it may be due to
-    /// something like a worker timeout.
-    last_error: Option<Error>,
-
-    /// Worker that is currently running this action, None if unassigned.
-    worker_id: Option<WorkerId>,
+pub trait WorkerSchedulerState {
+    /// Refreshes the lifetime of the worker with the given timestamp.
+    fn refresh_worker_lifetime(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error>;
+    /// Adds a worker to the pool.
+    /// Note: This function will not do any task matching.
+    fn add_worker(&self, worker: Worker) -> Result<(), Error>;
+    fn remove_worker(&self, worker_id: &WorkerId) -> Option<Worker>;
+    fn find_worker_for_action_mut(
+        &self,
+        operation_id: &OperationId,
+    ) -> Option<&WorkerId>;
 }
 
-struct Workers {
-    workers: LruCache<WorkerId, Worker>,
-    /// The allocation strategy for workers.
-    allocation_strategy: WorkerAllocationStrategy,
+pub trait ActionSchedulerState {
+    // Find action w/ add if didn't exist
+    /// Adds an action to the scheduler for remote execution.
+    async fn get_or_create_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<(OperationId, watch::Receiver<Arc<ActionState>>), Error>;
+
+    /// Find an existing action by its name.
+    async fn find_existing_action(
+        &self,
+        action_id: &OperationId,
+    ) -> Option<watch::Receiver<Arc<ActionState>>>;
+
+    /// Cleans up the cache of recently completed actions.
+    async fn clean_recently_completed_actions(&self);
+
+    /// Register the metrics for the action scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+}
+pub struct LocalSchedulerStateStorage {
+    workers: HashMap<WorkerId, Worker>,
+    actions: HashMap<Arc<ActionInfo>, OperationId>,
+    queued_actions_set: HashSet<OperationId>,
+    queued_actions: BTreeMap<OperationId, AwaitedAction>,
+    active_actions: HashMap<OperationId, AwaitedAction>,
+    recently_completed_actions: HashSet<CompletedAction>,
 }
 
-impl Workers {
-    fn new(allocation_strategy: WorkerAllocationStrategy) -> Self {
-        Self {
-            workers: LruCache::unbounded(),
-            allocation_strategy,
+pub struct LocalSchedulerState {
+    inner: Arc<Mutex<LocalSchedulerStateStorage>>
+}
+
+impl WorkerSchedulerState for LocalSchedulerState {
+
+}
+
+enum BackPlane {
+    Local(LocalSchedulerState),
+    Redis(RedisAdapter),
+}
+
+impl LocalSchedulerStateStorage {
+    // Tries to find a satisfying worker and assign the action to it.
+    // If it fails to find a qualifying worker, returns none
+    pub fn assign_action_to_worker(
+        &self,
+        operation_id: &OperationId,
+    ) -> Option<&WorkerId> {
+
+        let notify_worker_result =
+            worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+        if notify_worker_result.is_err() {
+            // Remove worker, as it is no longer receiving messages and let it try to find another worker.
+            let err = make_err!(
+                Code::Internal,
+                "Worker command failed, removing worker {}",
+                worker_id
+            );
+            warn!("{:?}", err);
+            self.immediate_evict_worker(&worker_id, err);
+            return;
         }
-    }
 
+        // At this point everything looks good, so remove it from the queue and add it to active actions.
+        let (action_info, mut awaited_action) = self
+            .queued_actions
+            .remove_entry(action_info.as_ref())
+            .unwrap();
+        assert!(
+            self.queued_actions_set.remove(&action_info),
+            "queued_actions_set should always have same keys as queued_actions"
+        );
+        Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
+        awaited_action.worker_id = Some(worker_id);
+        let send_result = awaited_action
+            .notify_channel
+            .send(awaited_action.current_state.clone());
+        if send_result.is_err() {
+            // Don't remove this task, instead we keep them around for a bit just in case
+            // the client disconnected and will reconnect and ask for same job to be executed
+            // again.
+            warn!(
+                "Action {} has no more listeners",
+                awaited_action.action_info.digest().hash_str()
+            );
+        }
+        awaited_action.attempts += 1;
+        self.active_actions.insert(action_info, awaited_action);
+    }
     /// Refreshes the lifetime of the worker with the given timestamp.
     fn refresh_lifetime(
         &mut self,
@@ -113,12 +192,12 @@ impl Workers {
     /// Note: This function will not do any task matching.
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id;
-        self.workers.put(worker_id, worker);
+        self.workers.insert(worker_id, worker);
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
         // we have added it to the map, or we might get some strange race conditions due to the way
         // the multi-threaded runtime works.
-        let worker = self.workers.peek_mut(&worker_id).unwrap();
+        let worker = self.workers.get_mut(&worker_id).unwrap();
         let res = worker
             .send_initial_connection_result()
             .err_tip(|| "Failed to send initial connection result to worker");
@@ -135,42 +214,28 @@ impl Workers {
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
-        self.workers.pop(worker_id)
+        self.workers.remove(worker_id)
     }
 
     /// Attempts to find a worker that is capable of running this action.
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
-    fn find_worker_for_action_mut<'a>(
-        &'a mut self,
-        awaited_action: &AwaitedAction,
-    ) -> Option<&'a mut Worker> {
-        assert!(matches!(
-            awaited_action.current_state.stage,
-            ActionStage::Queued
-        ));
-        let action_properties = &awaited_action.action_info.platform_properties;
-        let mut workers_iter = self.workers.iter_mut();
-        let workers_iter = match self.allocation_strategy {
-            // Use rfind to get the least recently used that satisfies the properties.
-            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
-                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
-            }),
-            // Use find to get the most recently used that satisfies the properties.
-            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
-                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
-            }),
-        };
-        let worker_id = workers_iter.map(|(_, w)| &w.id);
-        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
-        if let Some(&worker_id) = worker_id {
-            self.workers.get_mut(&worker_id)
-        } else {
+    fn find_satisfying_workers(
+        &mut self,
+        action_properties: PlatformProperties,
+    ) -> Vec<&WorkerId> {
+        self.workers.iter_mut().filter_map(|(id, w)| {
+            if w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties) {
+                return Some(id)
+            }
             None
-        }
+        }).collect()
     }
 }
+impl WorkerSchedulerState for LocalSchedulerState {
+}
+
 
 struct CompletedAction {
     completed_time: SystemTime,
@@ -199,26 +264,7 @@ impl Borrow<ActionInfoHashKey> for CompletedAction {
 }
 
 struct SimpleSchedulerImpl {
-    // BTreeMap uses `cmp` to do it's comparisons, this is a problem because we want to sort our
-    // actions based on priority and insert timestamp but also want to find and join new actions
-    // onto already executing (or queued) actions. We don't know the insert timestamp of queued
-    // actions, so we won't be able to find it in a BTreeMap without iterating the entire map. To
-    // get around this issue, we use two containers, one that will search using `Eq` which will
-    // only match on the `unique_qualifier` field, which ignores fields that would prevent
-    // multiplexing, and another which uses `Ord` for sorting.
-    //
-    // Important: These two fields must be kept in-sync, so if you modify one, you likely need to
-    // modify the other.
-    queued_actions_set: HashSet<Arc<ActionInfo>>,
-    queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
-    workers: Workers,
-    active_actions: HashMap<Arc<ActionInfo>, AwaitedAction>,
-    // These actions completed recently but had no listener, they might have
-    // completed while the caller was thinking about calling wait_execution, so
-    // keep their completion state around for a while to send back.
-    // TODO(#192) Revisit if this is the best way to handle recently completed actions.
-    recently_completed_actions: HashSet<CompletedAction>,
-    /// The duration that actions are kept in recently_completed_actions for.
+    state_manager: StateManager,
     retain_completed_for: Duration,
     /// Timeout of how long to evict workers if no response in this given amount of time in seconds.
     worker_timeout_s: u64,
@@ -230,8 +276,8 @@ struct SimpleSchedulerImpl {
 }
 
 impl SimpleSchedulerImpl {
-    fn subscribe_to_channel(awaited_action: &AwaitedAction) -> watch::Receiver<Arc<ActionState>> {
-        let rx = awaited_action.notify_channel.subscribe();
+    async fn subscribe_to_channel(&self, operation_id: &OperationId) -> watch::Receiver<Arc<ActionState>> {
+        let rx = self.state_manager.subscribe(operation_id).await;
         // TODO: Fix this when fixed upstream tokio-rs/tokio#5871
         awaited_action
             .notify_channel

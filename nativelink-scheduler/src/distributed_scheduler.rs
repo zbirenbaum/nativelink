@@ -27,26 +27,27 @@ use crate::state_manager::StateManager;
 use crate::worker::{Worker, WorkerId, WorkerTimestamp};
 use crate::worker_scheduler::WorkerScheduler;
 
-pub struct ActionSchedulerInstance {
-    state_manager: Arc<StateManager>,
-}
-
-
-impl ActionSchedulerInstance {
-    pub fn new(
-        scheduler_cfg: &nativelink_config::schedulers::ActionSchedulerInstance,
-    ) -> Self {
-        Self {
-            state_manager: Arc::new(StateManager::new(
-                scheduler_cfg.db_url.clone(),
-                scheduler_cfg.supported_platform_properties
-                    .clone()
-                    .unwrap_or_default()
-            )),
-        }
-    }
-}
-
+// pub struct ActionSchedulerInstance {
+//     supported_platform_properties: scheduler_cfg.supported_platform_properties
+//     state_manager: Arc<StateManager>,
+// }
+//
+//
+// impl ActionSchedulerInstance {
+//     pub fn new(
+//         scheduler_cfg: &nativelink_config::schedulers::ActionSchedulerInstance,
+//     ) -> Self {
+//         Self {
+//             supported_platform_properties: scheduler_cfg.supported_platform_properties
+//                 .clone()
+//                 .unwrap_or_default(),
+//             state_manager: Arc::new(StateManager::new(
+//                 scheduler_cfg.db_url.clone()
+//             ))
+//         }
+//     }
+// }
+//
 #[async_trait]
 impl ActionScheduler for ActionSchedulerInstance {
     async fn add_action(

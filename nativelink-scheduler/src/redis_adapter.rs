@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use futures::{Future, StreamExt};
 use std::collections::HashMap;
@@ -15,42 +16,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use nativelink_error::Error;
 use uuid::Uuid;
-
 use crate::platform_property_manager::{self, PlatformPropertyManager};
 use crate::worker::WorkerId;
-/*
-Action flow:
-    1. Action is submitted
-    2. Return a subscriber which will receive the result on completion
-        - subscribe_to_action(ActionUniqueId)
-        - channel: action:state:${ActionUniqueId}
-    3. Check ExistingActions for ActionUniqueId matching EncodedActionName
-        - If not present:
-            1. Add to ExistingActions
-            2. Push to PendingActionsQueue
-            3. Set ActionStageMap(ActionUniqueId) to ActionStage::Pending
-    4. Get the action stage
-        - ActionStageMap(ActionUniqueId)
-    5. Publish the stage from 4
-        - publish_to_action(action:state:${ActionUniqueId}, action_stage)
-    6. whenever update_action_state(ActionInfoHashKey) is called:
-        - get the encoded db key: ActionInfoHashKey::into<EncodedActionName>
-        - find the ActionUniqueId for said key
-            - if it doesn't exist:
-
-                action was dropped and needs to be retried
-        - publish the action stage to the action channel using the ActionUniqueId
-*/
+use tokio::sync::{watch, Notify};
 
 pub struct Subscriber {
     redis_sub: PubSub,
     channel: String,
-}
-
-#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
-pub enum Identifier {
-    Worker(WorkerId),
-    Operation(OperationId),
 }
 
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
@@ -60,10 +32,16 @@ enum PlatformPropertyRedisKey {
     Minimum(String),
 }
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
-enum WorkerMaps {
+enum WorkerFields {
     Workers,
     // takes the key and value of the property and adds the worker to the list
+    RunningOperations(WorkerId),
+    IsPaused(WorkerId),
+    IsDraining(WorkerId),
+
+
     PlatformProperties(PlatformPropertyRedisKey),
+
 }
 
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
@@ -77,8 +55,6 @@ enum ActionFields {
     PlatformProperties(OperationId)
 }
 
-const KNOWN_PROPERTIES: &str = "known_properties";
-
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
 enum ActionMaps {
     // Sorted set of <OperationId, Priority>
@@ -91,133 +67,18 @@ enum ActionMaps {
 }
 
 
-fn parse_property_value(
-    value: &str,
-    property_type: PropertyType
-) -> Result<PlatformPropertyValue, Error> {
-    match property_type {
-        PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
-            value.parse::<u64>().err_tip_with_code(|e| {
-                (
-                    Code::InvalidArgument,
-                    format!("Cannot convert to platform property to u64: {value} - {e}"),
-                )
-            })?,
-        )),
-        PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-        PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
-    }
+#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
+enum WorkerFields {
+    AssignedActions,
 }
 
 pub struct RedisAdapter {
     client: Client,
-    known_properties: HashMap<String, PropertyType>
 }
 
-// One call to get all worker IDs
-// Create a pipeline which queuries all of those workers in one go
-
-// SCAN 0 MATCH "key:value:*" COUNT 1000
-// platform_properties {
-//     exact {
-//          property:propertyvalue:*
-//          HMAP{
-//              key: WorkerId: field: property, value: propertyvalue
-//          }
-//          workerId: {
-//
-//          }
-//         key:value:workerId
-//     },
-//     // Sorted set
-//     // return all worker ids with score for key >= minimum
-//     minimum {
-//         key: property_key,
-//         value: score, workerId
-//     }
-// }
 impl RedisAdapter {
-    /// Given a specific key and value, returns the translated `PlatformPropertyValue`. This will
-    /// automatically convert any strings to the type-value pairs of `PlatformPropertyValue` based
-    /// on the configuration passed into the `PlatformPropertyManager` constructor.
-    fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
-        if let Some(prop_type) = self.known_properties.get(key) {
-            return match prop_type {
-                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
-                    value.parse::<u64>().err_tip_with_code(|e| {
-                        (
-                            Code::InvalidArgument,
-                            format!("Cannot convert to platform property to u64: {value} - {e}"),
-                        )
-                    })?,
-                )),
-                PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-                PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
-            };
-        }
-        Err(make_input_err!("Unknown platform property '{}'", key))
-    }
+    pub async fn assign_to_worker(&self) {
 
-    async fn set_worker_platform_properties(
-        &self,
-        worker_id: WorkerId,
-        platform_properties: Vec<(&str, &str)>,
-    ) {
-        let mut pipe = &mut Pipeline::new();
-        for (key, check_value) in platform_properties.iter() {
-            pipe = match self.make_prop_value(key, check_value).unwrap() {
-                PlatformPropertyValue::Exact(v) => {
-                    pipe.lpush(
-                        WorkerMaps::PlatformProperties(
-                            PlatformPropertyRedisKey::Exact(
-                                key.to_string(),
-                                PlatformPropertyValue::Exact(v)
-                            )
-                        ),
-                        worker_id
-                    )
-                },
-                PlatformPropertyValue::Priority(v) => {
-                    pipe.lpush(
-                        WorkerMaps::PlatformProperties(
-                            PlatformPropertyRedisKey::Priority(
-                                key.to_string(),
-                                PlatformPropertyValue::Priority(v)
-                            )
-                        ),
-                        worker_id
-                    )
-                },
-                PlatformPropertyValue::Minimum(v) => {
-                    pipe.zadd(
-                        WorkerMaps::PlatformProperties(
-                            PlatformPropertyRedisKey::Minimum(key.to_string())
-                        ),
-                        worker_id,
-                        v
-                    )
-                },
-                PlatformPropertyValue::Unknown(_) => {
-                    pipe
-                }
-            };
-        };
-    }
-    async fn set_known_properties(
-        &self,
-        known_properties: Vec<(&str, PropertyType)>,
-    ) -> RedisResult<()> {
-        todo!()
-        // let mut con = self.get_multiplex_connection().await?;
-        // con.zscan_match(key, pattern)
-        // con.hset_multiple(key, items)
-    }
-
-    pub async fn add_action_state(&self, state: ActionState) -> RedisResult<()> {
-        todo!()
-        // let mut con = self.get_multiplex_connection().await.unwrap();
-        // let pipe = Pipeline::new();
-        // pipe.atomic()
     }
     pub async fn get_queued_actions(&self) {
         // let mut con = self.get_multiplex_connection().await.unwrap();
@@ -257,10 +118,10 @@ impl RedisAdapter {
         Ok(rx)
     }
 
-    pub fn new(url: String, known_properties: HashMap<String, PropertyType>) -> Self {
+    pub fn new(url: String) -> Self {
         Self {
             client: redis::Client::open(url).expect("Could not connect to db"),
-            known_properties
+            tasks_or_workers_change_notify: Arc<Notify>,
         }
     }
 
@@ -283,23 +144,7 @@ impl RedisAdapter {
         client.get_async_pubsub().await
     }
 
-    pub async fn assign_action_to_worker(
-        &self,
-    ) -> RedisResult<()> {
-        let mut con = self.get_multiplex_connection().await?;
-        let queue_len: u128 = con.zcard(ActionMaps::Queued).await?;
-        if queue_len == 0 {
-            return Ok(())
-        }
-        // let mut queue_iter: redis::AsyncIter<OperationId> = con.zscan(ActionMaps::Queued).await?;
-        // con.hgetall(WorkerMaps::PlatformProperties)
-
-        // let workers = redis::RedisFuture<Output =
-        Ok(())
-    }
-
-
-    pub async fn update_action_state(
+    pub async fn update_action_stage(
         &self,
         action_info: ActionInfo,
         stage: ActionStage
@@ -307,8 +152,14 @@ impl RedisAdapter {
         let mut con = self.get_multiplex_connection().await?;
         let name = ActionName::from(&action_info);
         let id: OperationId = con.get::<ActionName, OperationId>(name).await.unwrap();
-
-        // con.publish::<OperationId, ActionState, ActionState>(id, stage).await;
+        let mut pipe = Pipeline::new();
+        let stage = pipe
+            .atomic()
+            .set(ActionFields::Stage(id), stage)
+            .get(ActionFields::Stage(id))
+            .query_async(&mut con)
+            .await?;
+        con.publish::<OperationId, ActionState, ActionState>(id, stage).await;
         Ok(())
     }
 
@@ -363,7 +214,7 @@ impl RedisAdapter {
     pub async fn add_or_merge_action(
         &self,
         action_info: &ActionInfo
-    ) -> RedisResult<watch::Receiver<Arc<ActionState>>> {
+    ) -> RedisResult<(OperationId, watch::Receiver<Arc<ActionState>>)> {
         let mut con = self.get_multiplex_connection().await?;
         let name = ActionName::from(action_info);
         let existing_id: Option<OperationId> = con.get(&name).await?;
@@ -393,8 +244,8 @@ impl RedisAdapter {
             let op = op.unwrap();
             Arc::new(ActionState::try_from(op).unwrap())
         };
-        self.publish_action_state(operation_id);
         let v = self.subscribe(&operation_id.to_string(), cb).await.unwrap();
-        Ok(v)
+        self.publish_action_state(operation_id).await;
+        Ok((operation_id, v))
     }
 }

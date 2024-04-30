@@ -26,47 +26,49 @@ use crate::{platform_property_manager::{self, PlatformPropertyManager}, redis_ad
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
 pub struct StateManager {
-    inner: Arc<RedisAdapter>,
+    inner: RedisAdapter,
+    tasks_or_workers_change_notify:
 }
+
+trait SchedulerStateStore {
+    async fn subscribe(
+        &self,
+        operation_id: &OperationId
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
+
+    async fn add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<OperationId, Error> {
+        self.add_or_merge_action(&action_info)
+            .await.
+            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
+    }
+}
+
 
 impl StateManager {
     #[inline]
     #[must_use]
     pub fn new(
         db_url: String,
-        supported_platform_properties: std::collections::HashMap<String, PropertyType>
     ) -> Self {
-
-        let platform_property_manager = Arc::new(PlatformPropertyManager::new(
-            supported_platform_properties
-        ));
-        let adapter = Arc::new(RedisAdapter::new(db_url.clone(), platform_property_manager.get_known_properties().clone()));
+        let adapter = RedisAdapter::new(db_url.clone());
         // TODO: Once this works, abstract the RedisAdapter to a DatabaseAdapter enum
         // and dynamically create the correct adapter type
-        Self {
-            inner: adapter,
-        }
+        Self { inner: adapter, }
     }
 
 
     pub async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        self.inner.add_or_merge_action(&action_info)
+    ) -> Result<(OperationId, watch::Receiver<Arc<ActionState>>), Error> {
+        let res = self.inner.add_or_merge_action(&action_info)
             .await.
-            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
-
-        // let mut sub = self.inner.get_async_pubsub().await.expect("failed to get client");
-        // tokio::spawn(async move {
-        //     sub.subscribe(id).await;
-        //     let mut stream = sub.on_message();
-        //     loop {
-        //         while let Some(msg) = stream.next().await {
-        //         }
-        //
-        //     }
-        // });
+            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}});
+        self.tasks_or_workers_change_notify.notify_one();
+        res
     }
 }
     //

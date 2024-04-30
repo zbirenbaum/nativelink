@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use futures::{Future, StreamExt};
-use hashbrown::HashMap;
+use itertools::Itertools;
+use nativelink_config::cas_server::WorkerProperty;
+use serde_json::value;
+use std::collections::HashMap;
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_input_err, Code, ResultExt};
 use nativelink_proto::google::longrunning::Operation;
@@ -9,7 +12,7 @@ use nativelink_util::platform_properties::{self, PlatformProperties, PlatformPro
 use prost::Message;
 use nativelink_util::action_messages::{OperationId, ActionInfo, ActionName, ActionStage, ActionState };
 use redis::aio::{MultiplexedConnection, PubSub};
-use redis::{ AsyncCommands, Client, FromRedisValue, Pipeline, RedisResult };
+use redis::{ AsyncCommands, Client, Cmd, FromRedisValue, Pipeline, RedisError, RedisResult };
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -17,7 +20,7 @@ use nativelink_error::Error;
 use uuid::Uuid;
 
 use crate::platform_property_manager::{self, PlatformPropertyManager};
-use crate::worker::WorkerId;
+use crate::worker::{Worker, WorkerId};
 /*
 Action flow:
     1. Action is submitted
@@ -54,9 +57,17 @@ pub enum Identifier {
 }
 
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
+enum PlatformPropertyRedisKey {
+    Exact(String, PlatformPropertyValue),
+    Priority(String, PlatformPropertyValue),
+    Minimum(String),
+}
+#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
 enum WorkerMaps {
     Workers,
-    PlatformProperties(PropertyType),
+    // takes the key and value of the property and adds the worker to the list
+    StringPlatformProperties(WorkerId),
+    IntPlatformProperties(WorkerId),
 }
 
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
@@ -83,7 +94,6 @@ enum ActionMaps {
     // ActionState>
 }
 
-
 fn parse_property_value(
     value: &str,
     property_type: PropertyType
@@ -107,94 +117,69 @@ pub struct RedisAdapter {
     known_properties: HashMap<String, PropertyType>
 }
 
-// One call to get all worker IDs
-// Create a pipeline which queuries all of those workers in one go
+#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
+pub struct PlatformPropertyEntry {
+    key: String,
+    value: Option<String>
+}
 
-// SCAN 0 MATCH "key:value:*" COUNT 1000
-// platform_properties {
-//     exact {
-//          property:propertyvalue:*
-//          HMAP{
-//
-//              key: WorkerId: field: property, value: propertyvalue
-//          }
-//          workerId: {
-//
-//          }
-//         key:value:workerId
-//     },
-//     // Sorted set
-//     // return all worker ids with score for key >= minimum
-//     minimum {
-//         key: property_key,
-//         value: score, workerId
-//     }
-// }
+
 impl RedisAdapter {
+    async fn get_known_properties(&self) -> RedisResult<Option<HashMap<String, PlatformPropertyValue>>> {
+        let mut con = self.get_multiplex_connection().await?;
+        con.hgetall(KNOWN_PROPERTIES).await
+    }
     /// Given a specific key and value, returns the translated `PlatformPropertyValue`. This will
     /// automatically convert any strings to the type-value pairs of `PlatformPropertyValue` based
     /// on the configuration passed into the `PlatformPropertyManager` constructor.
-    fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
-        if let Some(prop_type) = self.known_properties.get(key) {
-            return match prop_type {
-                PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
-                    value.parse::<u64>().err_tip_with_code(|e| {
-                        (
-                            Code::InvalidArgument,
-                            format!("Cannot convert to platform property to u64: {value} - {e}"),
-                        )
-                    })?,
-                )),
-                PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
-                PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
-            };
-        }
-        Err(make_input_err!("Unknown platform property '{}'", key))
-    }
 
     async fn set_worker_platform_properties(
         &self,
-        pipe: &mut Pipeline,
-        platform_properties: Vec<(&str, &str)>
+        worker_id: WorkerId,
+        platform_properties: Vec<(&str, &str)>,
     ) {
-        platform_properties.iter().map(|key, check_value| {
-            match self.make_prop_value(key, check_value).unwrap() {
+    }
+
+    pub async fn add_worker(
+        &self,
+        worker_id: WorkerId,
+        platform_properties: Option<Vec<(String, WorkerProperty)>>,
+    ) -> RedisResult<()> {
+        let Some(properties) = platform_properties else {
+            return Ok(());
+        };
+        let mut pipe = Pipeline::new();
+        properties.iter().for_each(|(key, value)| {
+            let maybe_cmd = match value {
                 PlatformPropertyValue::Exact(v) => {
-                    pipe.hset(
-                        WorkerMaps::PlatformProperties(PropertyType::exact),
-                        key,
-                        v
-                    )
+                    let val = PlatformPropertyEntry { key: key.to_string(), value: Some(v.into()) };
+                    Some(Cmd::sadd(WorkerMaps::StringPlatformProperties(worker_id), val))
                 },
-                PropertyType::exact => {
-                }
+                PlatformPropertyValue::Priority(v) => {
+                    let val = PlatformPropertyEntry { key: key.to_string(), value: Some(v.into()) };
+                    Some(Cmd::sadd(WorkerMaps::StringPlatformProperties(worker_id), val))
+                },
+                PlatformPropertyValue::Minimum(v) => {
+                    // V is the score here
+                    let val = PlatformPropertyEntry { key: key.to_string(), value: None };
+                    Some(Cmd::zadd(WorkerMaps::IntPlatformProperties(worker_id), val, v))
+                },
+                PlatformPropertyValue::Unknown(_) => { None }
+            };
+            if let Some(cmd) = maybe_cmd {
+                Pipeline::add_command(&mut pipe, cmd);
             }
         });
-    }
-    async fn set_known_properties(
-        &self,
-        known_properties: Vec<(&str, PropertyType)>,
-    ) -> RedisResult<()> {
-        todo!()
-        // let mut con = self.get_multiplex_connection().await?;
-        // con.zscan_match(key, pattern)
-        // con.hset_multiple(key, items)
-    }
-    async fn set_property_value(
-        &self,
-        id: Identifier,
-        property_type: PropertyType,
-        key: &str,
-        value: &str,
-    ) -> RedisResult<()> {
-
-        let mut con = self.get_multiplex_connection().await.unwrap();
-        match property_type {
-            PropertyType::minimum => {
-
-            }
-        }
+        let mut con = self.get_multiplex_connection().await?;
+        pipe.query_async(&mut con).await?;
         Ok(())
+
+    }
+    pub fn set_known_properties(
+        &mut self,
+        known_properties: HashMap<String, PropertyType>,
+    ) {
+        self.known_properties = known_properties
     }
 
     pub async fn add_action_state(&self, state: ActionState) -> RedisResult<()> {
@@ -241,10 +226,10 @@ impl RedisAdapter {
         Ok(rx)
     }
 
-    pub fn new(url: String, property_manager: PlatformPropertyManager) -> Self {
+    pub fn new(url: String, known_properties: HashMap<String, PropertyType>) -> Self {
         Self {
             client: redis::Client::open(url).expect("Could not connect to db"),
-            property_manager
+            known_properties
         }
     }
 
@@ -283,7 +268,7 @@ impl RedisAdapter {
     }
 
 
-    pub async fn update_action_state(
+    pub async fn update_action_stage(
         &self,
         action_info: ActionInfo,
         stage: ActionStage
@@ -309,11 +294,6 @@ impl RedisAdapter {
         Ok(())
 
     }
-    async fn get_action_platform_properties(&self, id: OperationId) -> RedisResult<Vec<String, PlatformProperties>> {
-        let mut con = self.get_multiplex_connection().await?;
-        let properties = con.hget(key, field).await?;
-        Ok(properties)
-    }
 
     pub async fn create_new_action(
         &self,
@@ -338,7 +318,7 @@ impl RedisAdapter {
             .set(ActionFields::Name(id), &name)
             .set(ActionFields::Attempts(id), 0)
             .hset_multiple(ActionFields::PlatformProperties(id), &platform_properties)
-            .zadd(ActionMaps::Queued, &id, action_info.priority)
+            .zadd(ActionMaps::Queued, id, action_info.priority)
             .get(&name)
             .query_async(&mut con)
             .await
@@ -365,14 +345,14 @@ impl RedisAdapter {
                         .arg(ActionMaps::Queued)
                         .arg("LT")
                         .arg(action_info.priority)
-                        .arg(&id)
+                        .arg(id)
                         .query_async(&mut con)
                         .await?
                 }
                 id
             },
             None => {
-                self.create_new_action(&action_info).await?
+                self.create_new_action(action_info).await?
             }
         };
         // replace stage with state -> lets you add more metadata
@@ -382,7 +362,7 @@ impl RedisAdapter {
             let op = op.unwrap();
             Arc::new(ActionState::try_from(op).unwrap())
         };
-        self.publish_action_state(operation_id);
+        self.publish_action_state(operation_id).await?;
         let v = self.subscribe(&operation_id.to_string(), cb).await.unwrap();
         Ok(v)
     }

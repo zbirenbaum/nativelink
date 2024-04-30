@@ -12,18 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
+use hashbrown::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{Error, Code};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_util::{action_messages::{ActionInfo, ActionState, OperationId}, platform_properties::PlatformPropertyValue};
 use tokio::sync::watch;
+use nativelink_error::{make_input_err};
 
 use crate::{platform_property_manager::{self, PlatformPropertyManager}, redis_adapter::RedisAdapter};
 
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
+
+fn make_prop_value(key: &str, value: &str, known_properties: &HashMap<String, PropertyType>) -> Result<PlatformPropertyValue, Error> {
+    if let Some(prop_type) = known_properties.get(key) {
+        return match prop_type {
+            PropertyType::minimum => Ok(PlatformPropertyValue::Minimum(
+                value.parse::<u64>().err_tip_with_code(|e| {
+                    (
+                        Code::InvalidArgument,
+                        format!("Cannot convert to platform property to u64: {value} - {e}"),
+                    )
+                })?,
+            )),
+            PropertyType::exact => Ok(PlatformPropertyValue::Exact(value.to_string())),
+            PropertyType::priority => Ok(PlatformPropertyValue::Priority(value.to_string())),
+        };
+    }
+    Err(make_input_err!("Unknown platform property '{}'", key))
+}
 pub struct StateManager {
     inner: Arc<RedisAdapter>,
 }
@@ -33,13 +53,14 @@ impl StateManager {
     #[must_use]
     pub fn new(
         db_url: String,
-        supported_platform_properties: HashMap<String, PropertyType>
+        supported_platform_properties: std::collections::HashMap<String, PropertyType>
     ) -> Self {
 
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             supported_platform_properties
         ));
-        let adapter = Arc::new(RedisAdapter::new(db_url.clone(), platform_property_manager));
+        let known_properties  = platform_property_manager.get_known_properties().to_owned();
+        let adapter = Arc::new(RedisAdapter::new(db_url.clone(), known_properties));
         // TODO: Once this works, abstract the RedisAdapter to a DatabaseAdapter enum
         // and dynamically create the correct adapter type
         Self {

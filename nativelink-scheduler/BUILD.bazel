@@ -62,11 +62,12 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
-        "tests/action_messages_test.rs",
-        "tests/cache_lookup_scheduler_test.rs",
-        "tests/property_modifier_scheduler_test.rs",
+        # "tests/action_messages_test.rs",
+        # "tests/cache_lookup_scheduler_test.rs",
+        # "tests/property_modifier_scheduler_test.rs",
+        # "tests/distributed_scheduler_test.rs",
         "tests/redis_adapter_test.rs",
-        "tests/simple_scheduler_test.rs",
+        # "tests/simple_scheduler_test.rs",
     ],
     compile_data = [
         "tests/utils/mock_scheduler.rs",

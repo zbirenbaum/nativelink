@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use crate::serde_utils::convert_numeric_with_shellexpand;
 
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Serialize, Deserialize};
@@ -24,8 +25,7 @@ use crate::stores::{GrpcEndpoint, Retry};
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
     // simple(SimpleScheduler),
-    action(ActionSchedulerInstance),
-    worker(WorkerSchedulerInstance),
+    distributed(SchedulerInstance),
     grpc(GrpcScheduler),
     // cache_lookup(CacheLookupScheduler),
     property_modifier(PropertyModifierScheduler),
@@ -70,20 +70,21 @@ pub enum WorkerAllocationStrategy {
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct WorkerSchedulerInstance {
+pub struct SchedulerInstance {
     pub db_url: String,
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
+
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub retain_completed_for_s: u64,
+
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub worker_timeout_s: u64,
+
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_job_retries: usize,
+
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
-}
-
-
-
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ActionSchedulerInstance {
-    pub db_url: String,
-    pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 }
 
 // #[derive(Deserialize, Debug, Default)]

@@ -1,24 +1,18 @@
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use futures::{Future, StreamExt};
-use std::collections::HashMap;
-use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_input_err, Code, ResultExt};
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::platform_properties::{self, PlatformProperties, PlatformPropertyValue};
 use prost::Message;
-use nativelink_util::action_messages::{OperationId, ActionInfo, ActionName, ActionStage, ActionState };
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionName, ActionStage, ActionState, OperationId };
 use redis::aio::{MultiplexedConnection, PubSub};
-use redis::{ AsyncCommands, Client, FromRedisValue, Pipeline, RedisError, RedisResult };
+use redis::{ AsyncCommands, AsyncIter, Client, FromRedisValue, Pipeline, RedisError, RedisResult };
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use nativelink_error::Error;
 use uuid::Uuid;
-use crate::platform_property_manager::{self, PlatformPropertyManager};
 use crate::worker::WorkerId;
-use tokio::sync::{watch, Notify};
 
 pub struct Subscriber {
     redis_sub: PubSub,
@@ -67,24 +61,17 @@ enum ActionMaps {
 }
 
 
-#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
-enum WorkerFields {
-    AssignedActions,
-}
-
 pub struct RedisAdapter {
     client: Client,
 }
 
 impl RedisAdapter {
-    pub async fn assign_to_worker(&self) {
+    // pub async fn get_queued_actions(&self) -> Result<Vec<OperationId>> {
+    //     let mut con = self.get_multiplex_connection().await.unwrap();
+    //     let jobs: redis::AsyncIter<OperationId> = con.zscan(ActionMaps::Queued).await?;
+    //     todo!()
+    // }
 
-    }
-    pub async fn get_queued_actions(&self) {
-        // let mut con = self.get_multiplex_connection().await.unwrap();
-        // let jobs = con.sscan(ActionMaps::Queued).await.into_iter();
-        todo!()
-    }
     pub async fn subscribe<'a, T, F>(&'a self, key: &'a str, pred: F) -> Result<watch::Receiver<T>, nativelink_error::Error>
     where
         T: Send + Sync + 'static,
@@ -121,7 +108,6 @@ impl RedisAdapter {
     pub fn new(url: String) -> Self {
         Self {
             client: redis::Client::open(url).expect("Could not connect to db"),
-            tasks_or_workers_change_notify: Arc<Notify>,
         }
     }
 
@@ -206,6 +192,28 @@ impl RedisAdapter {
             .await
     }
 
+    pub async fn find_action_by_hash_key(
+        &self,
+        unique_qualifier: &ActionInfoHashKey
+    ) -> RedisResult<Option<watch::Receiver<Arc<ActionState>>>> {
+        let mut con = self.get_multiplex_connection().await?;
+        let name = ActionName::from(unique_qualifier);
+        let Some(operation_id) = con.get::<&ActionName, Option<OperationId>>(&name).await? else {
+            return Ok(None)
+        };
+
+        // replace stage with state -> lets you add more metadata
+        let cb = |data: &[u8]| {
+            let op = Operation::decode(data);
+            // let op = op.map(Arc::new);
+            let op = op.unwrap();
+            Arc::new(ActionState::try_from(op).unwrap())
+        };
+        let v = self.subscribe(&operation_id.to_string(), cb).await.unwrap();
+        self.publish_action_state(operation_id).await;
+        Ok(Some(v))
+    }
+
     // Return the action stage here.
     // If the stage is ActionStage::Completed the callee
     // should request the stored result directly.
@@ -214,7 +222,7 @@ impl RedisAdapter {
     pub async fn add_or_merge_action(
         &self,
         action_info: &ActionInfo
-    ) -> RedisResult<(OperationId, watch::Receiver<Arc<ActionState>>)> {
+    ) -> RedisResult<watch::Receiver<Arc<ActionState>>> {
         let mut con = self.get_multiplex_connection().await?;
         let name = ActionName::from(action_info);
         let existing_id: Option<OperationId> = con.get(&name).await?;
@@ -246,6 +254,6 @@ impl RedisAdapter {
         };
         let v = self.subscribe(&operation_id.to_string(), cb).await.unwrap();
         self.publish_action_state(operation_id).await;
-        Ok((operation_id, v))
+        Ok(v)
     }
 }

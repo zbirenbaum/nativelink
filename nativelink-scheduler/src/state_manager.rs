@@ -14,38 +14,22 @@
 
 use std::sync::Arc;
 use hashbrown::HashMap;
+use parking_lot::{Mutex, MutexGuard};
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{Error, Code};
-use nativelink_util::{action_messages::{ActionInfo, ActionState, OperationId}, platform_properties::PlatformPropertyValue};
+use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
+use nativelink_util::{action_messages::{ActionInfo, ActionInfoHashKey, ActionState, OperationId}, platform_properties::PlatformPropertyValue};
 use tokio::sync::watch;
-
-use crate::{platform_property_manager::{self, PlatformPropertyManager}, redis_adapter::RedisAdapter};
-
+use nativelink_config::schedulers::WorkerAllocationStrategy;
+use crate::{platform_property_manager::{self, PlatformPropertyManager}, redis_adapter::RedisAdapter, worker::{Worker, WorkerId, WorkerTimestamp}};
+use tracing::error;
+use lru::LruCache;
 /// Engine used to manage the queued/running tasks and relationship with
 /// the worker nodes. All state on how the workers and actions are interacting
 /// should be held in this struct.
 pub struct StateManager {
     inner: RedisAdapter,
-    tasks_or_workers_change_notify:
 }
-
-trait SchedulerStateStore {
-    async fn subscribe(
-        &self,
-        operation_id: &OperationId
-    ) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
-
-    async fn add_action(
-        &self,
-        action_info: ActionInfo,
-    ) -> Result<OperationId, Error> {
-        self.add_or_merge_action(&action_info)
-            .await.
-            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
-    }
-}
-
 
 impl StateManager {
     #[inline]
@@ -56,19 +40,28 @@ impl StateManager {
         let adapter = RedisAdapter::new(db_url.clone());
         // TODO: Once this works, abstract the RedisAdapter to a DatabaseAdapter enum
         // and dynamically create the correct adapter type
-        Self { inner: adapter, }
+        Self { inner: adapter }
     }
-
 
     pub async fn add_action(
         &self,
         action_info: ActionInfo,
-    ) -> Result<(OperationId, watch::Receiver<Arc<ActionState>>), Error> {
-        let res = self.inner.add_or_merge_action(&action_info)
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        self.inner.add_or_merge_action(&action_info)
             .await.
-            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}});
-        self.tasks_or_workers_change_notify.notify_one();
-        res
+            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
+    }
+    pub async fn find_existing_action(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        let res = self.inner.find_action_by_hash_key(unique_qualifier)
+                .await.
+                map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}});
+        match res {
+            Ok(v) => v,
+            Err(_) => None
+        }
     }
 }
     //

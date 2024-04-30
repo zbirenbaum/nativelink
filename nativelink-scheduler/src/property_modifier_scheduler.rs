@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{OperationId, ActionInfo, ActionState};
+use nativelink_util::action_messages::{OperationId, ActionInfo, ActionState, ActionInfoHashKey};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
@@ -115,9 +115,9 @@ impl ActionScheduler for PropertyModifierScheduler {
 
     async fn find_existing_action(
         &self,
-        action_id: &OperationId,
+        unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.scheduler.find_existing_action(action_id).await
+        self.scheduler.find_existing_action(unique_qualifier).await
     }
 
     async fn clean_recently_completed_actions(&self) {

@@ -87,7 +87,7 @@ pub trait ActionSchedulerState {
     /// Find an existing action by its name.
     async fn find_existing_action(
         &self,
-        action_id: &OperationId,
+        unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>>;
 
     /// Cleans up the cache of recently completed actions.
@@ -467,6 +467,7 @@ impl SimpleSchedulerImpl {
         self.tasks_or_workers_change_notify.notify_one();
         Ok(())
     }
+
 
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using

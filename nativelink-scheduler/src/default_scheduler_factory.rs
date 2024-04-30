@@ -28,8 +28,7 @@ use crate::grpc_scheduler::GrpcScheduler;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 // use crate::simple_scheduler::SimpleScheduler;
 use crate::worker_scheduler::WorkerScheduler;
-use crate::distributed_scheduler::WorkerSchedulerInstance;
-use crate::distributed_scheduler::ActionSchedulerInstance;
+use crate::distributed_scheduler::SchedulerInstance;
 
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn ActionScheduler>>,
@@ -57,14 +56,10 @@ fn inner_scheduler_factory(
     visited_schedulers: &mut HashSet<usize>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
-        SchedulerConfig::action(config) => {
+        SchedulerConfig::distributed(config) => {
 
-            let action_scheduler = Arc::new(ActionSchedulerInstance::new(config));
-            (Some(action_scheduler), None)
-        }
-        SchedulerConfig::worker(config) => {
-            let worker_scheduler = Arc::new(WorkerSchedulerInstance::new(config));
-            (None, Some(worker_scheduler))
+            let scheduler = Arc::new(SchedulerInstance::new(config));
+            (Some(scheduler.clone()), Some(scheduler))
         }
         SchedulerConfig::grpc(config) => (Some(Arc::new(GrpcScheduler::new(config)?)), None),
         // SchedulerConfig::cache_lookup(config) => {

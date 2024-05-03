@@ -22,7 +22,9 @@ use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
 use nativelink_util::{action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,}, platform_properties::PlatformPropertyValue};
 use tokio::sync::watch;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use crate::{platform_property_manager::{self, PlatformPropertyManager}, redis_adapter::RedisAdapter };
+use crate::platform_property_manager::{self, PlatformPropertyManager};
+use crate::redis_adapter::RedisAdapter;
+use crate::scheduler_state::{ActionSchedulerStateStore, WorkerSchedulerStateStore};
 use tracing::error;
 use lru::LruCache;
 /// Engine used to manage the queued/running tasks and relationship with
@@ -57,7 +59,7 @@ impl StateManager {
         &self,
         worker_id: &WorkerId
     ) -> Result<Vec<OperationId>, Error> {
-        self.inner.get_worker_actions(worker_id).await
+        self.inner.get_actions_running_on_worker(worker_id).await
     }
 
     /// Updates the status of an action to the scheduler from the worker.

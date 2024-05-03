@@ -59,10 +59,56 @@ impl SchedulerInstance {
             workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy))
         }
     }
-    pub fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
-        // TODO: this and do try match are the bulk of the remoaining logic I think
-        todo!();
+    pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+    // match self.active_actions.remove(action_info) {
+    //     Some(running_action) => {
+    //         let mut awaited_action = running_action;
+    //         let send_result = if awaited_action.attempts >= self.max_job_retries {
+    //             self.metrics.retry_action_max_attempts_reached.inc();
+    //             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Completed(ActionResult {
+    //                 execution_metadata: ExecutionMetadata {
+    //                     worker: format!("{worker_id}"),
+    //                     ..ExecutionMetadata::default()
+    //                 },
+    //                 error: Some(err.merge(make_err!(
+    //                     Code::Internal,
+    //                     "Job cancelled because it attempted to execute too many times and failed"
+    //                 ))),
+    //                 ..ActionResult::default()
+    //             });
+    //             awaited_action
+    //                 .notify_channel
+    //                 .send(awaited_action.current_state.clone())
+    //             // Do not put the action back in the queue here, as this action attempted to run too many
+    //             // times.
+    //         } else {
+    //             self.metrics.retry_action.inc();
+    //             Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Queued;
+    //             let send_result = awaited_action
+    //                 .notify_channel
+    //                 .send(awaited_action.current_state.clone());
+    //             self.queued_actions_set.insert(action_info.clone());
+    //             self.queued_actions
+    //                 .insert(action_info.clone(), awaited_action);
+    //             send_result
+    //         };
+    //
+    //         if send_result.is_err() {
+    //             self.metrics.retry_action_no_more_listeners.inc();
+    //             // Don't remove this task, instead we keep them around for a bit just in case
+    //             // the client disconnected and will reconnect and ask for same job to be executed
+    //             // again.
+    //             warn!(
+    //                 "Action {} has no more listeners during evict_worker()",
+    //                 action_info.digest().hash_str()
+    //             );
+    //         }
+    //     }
+    //     None => {
+    //         error!("Worker stated it was running an action, but it was not in the active_actions : Worker: {:?}, ActionInfo: {:?}", worker_id, action_info);
+    //     }
     }
+
     #[must_use]
     pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
         let inner = self.workers.lock();

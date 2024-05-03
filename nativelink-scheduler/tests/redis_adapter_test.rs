@@ -33,6 +33,7 @@ use nativelink_scheduler::distributed_scheduler::SchedulerInstance;
 use nativelink_scheduler::redis_adapter::RedisAdapter;
 use nativelink_scheduler::worker::{Worker, WorkerId, WorkerTimestamp};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_scheduler::scheduler_state::{WorkerSchedulerStateStore, ActionSchedulerStateStore};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use tokio::sync::{mpsc, watch};

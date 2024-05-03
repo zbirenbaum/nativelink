@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -123,7 +124,7 @@ mod scheduler_tests {
             skip_cache_lookup: true,
             digest_function: DigestHasherFunc::Sha256,
         });
-        let lowest_priority_action = Arc::new(ActionInfo {
+        let _lowest_priority_action = Arc::new(ActionInfo {
             command_digest: DigestInfo::new([0u8; 32], 0),
             input_root_digest: DigestInfo::new([0u8; 32], 0),
             timeout: Duration::from_secs(10),

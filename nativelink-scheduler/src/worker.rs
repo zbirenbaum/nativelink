@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;

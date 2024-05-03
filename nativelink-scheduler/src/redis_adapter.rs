@@ -1,3 +1,4 @@
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::sync::Arc;
 
 use futures::{Future, StreamExt};
@@ -70,26 +71,6 @@ impl RedisAdapter {
     //     todo!()
     // }
 
-    pub async fn subscribe_test<'a>(&'a self, key: &'a str) -> Result<Arc<tokio::sync::Notify>, nativelink_error::Error>
-    where
-    {
-        let mut sub = self.get_async_pubsub().await?;
-        let id = OperationId::try_from(key)?;
-        sub.subscribe(&key).await.unwrap();
-        let mut stream = sub.into_on_message();
-        // This hangs forever atm
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let notify_clone = notify.clone();
-        // Hand tuple of rx and future to pump the rx
-        tokio::spawn(async move {
-            let msg = stream.next().await;
-            let state: ActionState = msg.unwrap().get_payload().unwrap();
-            let value = Arc::new(state);
-            notify_clone.notify_one();
-
-        });
-        Ok(notify)
-    }
     pub async fn subscribe<'a>(&'a self, key: &'a str) -> Result<watch::Receiver<Arc<ActionState>>, nativelink_error::Error>
     where
         // T: Send + Sync + 'static,
@@ -101,7 +82,7 @@ impl RedisAdapter {
         sub.subscribe(&key).await.unwrap();
         let mut stream = sub.into_on_message();
         // This hangs forever atm
-        let (tx, mut rx) = tokio::sync::watch::channel(Arc::new(state));
+        let (tx, rx) = tokio::sync::watch::channel(Arc::new(state));
         let mut rx_clone = rx.clone();
         // Hand tuple of rx and future to pump the rx
         tokio::spawn(async move {
@@ -302,7 +283,7 @@ impl RedisAdapter {
         // con.set(ActionFields::Stage(existing_id.unwrap()), ActionStage::Queued).await?;
         // let stage: ActionStage = con.get(ActionFields::Stage(existing_id.unwrap())).await?;
         // println!("{:?}", stage);
-        let (operation_id, stage) = match existing_id {
+        let (operation_id, _stage) = match existing_id {
             Some(id) => {
                 let stage: ActionStage = con.get(ActionFields::Stage(id)).await?;
                 if stage == ActionStage::Queued {

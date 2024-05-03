@@ -11,11 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::sync::Arc;
 use parking_lot::Mutex;
 use async_trait::async_trait;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId, WorkerTimestamp};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState,  WorkerId, WorkerTimestamp};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::watch;
@@ -26,10 +26,10 @@ use crate::state_manager::StateManager;
 // use crate::state_manager::StateManager;
 use crate::worker::Worker;
 use crate::worker_scheduler::WorkerScheduler;
-use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{error_if,  make_input_err, Error, ResultExt};
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use lru::LruCache;
-use tracing::{error, warn};
+use tracing::error;
 
 
 pub struct SchedulerInstance {

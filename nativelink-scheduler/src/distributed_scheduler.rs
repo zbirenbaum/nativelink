@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
 use async_trait::async_trait;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState,  WorkerId, WorkerTimestamp};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId, WorkerTimestamp};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::watch;
@@ -24,17 +24,19 @@ use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::state_manager::StateManager;
 // use crate::state_manager::StateManager;
-use crate::worker::Worker;
+use crate::worker::{Worker, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
 use nativelink_error::{error_if,  make_input_err, Error, ResultExt};
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use lru::LruCache;
 use tracing::error;
+use tokio::sync::Notify;
 
 
 pub struct SchedulerInstance {
     platform_property_manager: Arc<PlatformPropertyManager>,
     state_manager: Arc<StateManager>,
+    tasks_or_workers_change_notify: Arc<Notify>,
     workers: Mutex<Workers>
 }
 
@@ -50,11 +52,39 @@ impl SchedulerInstance {
         ));
         Self {
             platform_property_manager,
+            tasks_or_workers_change_notify: Arc::new(Notify::new()),
             state_manager: Arc::new(StateManager::new(
                 scheduler_cfg.db_url.clone()
             )),
             workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy))
         }
+    }
+    pub fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+        // TODO: this and do try match are the bulk of the remoaining logic I think
+        todo!();
+    }
+    #[must_use]
+    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.workers.lock();
+        inner.workers.contains(worker_id)
+    }
+
+    /// Checks to see if the worker can accept work. Should only be used in unit tests.
+    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
+        let mut inner = self.workers.lock();
+        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+        })?;
+        Ok(worker.can_accept_work())
+    }
+
+    /// A unit test function used to send the keep alive message to the worker from the server.
+    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        let mut inner = self.workers.lock();
+        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+        })?;
+        worker.keep_alive()
     }
 }
 
@@ -234,8 +264,19 @@ impl WorkerScheduler for SchedulerInstance {
     }
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, _worker_id: WorkerId) {
-        todo!()
+    async fn remove_worker(&self, worker_id: &WorkerId) {
+        let err = nativelink_error::make_err!(nativelink_error::Code::Internal, "Received request to remove worker");
+        let assigned_actions: Vec<OperationId> = self.state_manager.get_worker_actions(worker_id).await.unwrap();
+        let mut inner = self.workers.lock();
+        if let Some(mut worker) = inner.remove_worker(worker_id) {
+            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for action_info in worker.running_action_infos.drain() {
+                self.retry_action(&action_info, worker_id, err.clone());
+            }
+        }
+        self.tasks_or_workers_change_notify.notify_one();
     }
 
     /// Removes timed out workers from the pool. This is called periodically by an

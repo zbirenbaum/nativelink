@@ -53,6 +53,13 @@ impl StateManager {
             map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
     }
 
+    pub async fn get_worker_actions(
+        &self,
+        worker_id: &WorkerId
+    ) -> Result<Vec<OperationId>, Error> {
+        self.inner.get_worker_actions(worker_id).await
+    }
+
     /// Updates the status of an action to the scheduler from the worker.
     pub async fn update_action(
         &self,

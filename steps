@@ -1,6 +1,0 @@
-do_try_match:
-    1. get all action infos for queued actions
-    2. find a worker satisfying the action platform properties
-        2a. find_workers_satisfying_properties(&self, operation_properties) -> Vec<WorkerIds>
-    3. get_worker(&self, worker_id: WorkerId) -> UnboundedSender<UpdateForWorker>,
-        Have a method on db which returns a channel to communicate to worker with

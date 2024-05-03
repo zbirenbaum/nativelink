@@ -186,7 +186,7 @@ impl WorkerApiServer {
         going_away_request: GoingAwayRequest,
     ) -> Result<Response<()>, Error> {
         let worker_id: WorkerId = going_away_request.worker_id.try_into()?;
-        self.scheduler.remove_worker(worker_id).await;
+        self.scheduler.remove_worker(&worker_id).await;
         Ok(Response::new(()))
     }
 

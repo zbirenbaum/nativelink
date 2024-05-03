@@ -136,6 +136,13 @@ impl RedisAdapter {
         let id = con.get::<ActionName, OperationId>(name).await?;
         Ok(id)
     }
+    pub async fn get_worker_actions(
+        &self,
+        worker_id: &WorkerId
+    ) -> Result<Vec<OperationId>, Error> {
+        let mut con = self.get_multiplex_connection().await?;
+        Ok(con.smembers(WorkerFields::RunningOperations(worker_id.to_owned())).await?)
+    }
 
     pub async fn update_action_stage(
         &self,

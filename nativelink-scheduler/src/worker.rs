@@ -21,7 +21,7 @@ use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_util::action_messages::{ActionInfo, Id};
 use nativelink_util::metrics_utils::{
     CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
 };
@@ -30,43 +30,8 @@ use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
-
+pub type WorkerId = Id;
 pub type WorkerTimestamp = u64;
-
-/// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
-pub struct WorkerId(pub u128);
-
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
-        write!(f, "{worker_id_str}")
-    }
-}
-
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
-        f.write_str(worker_id_str)
-    }
-}
-
-impl TryFrom<String> for WorkerId {
-    type Error = Error;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        match Uuid::parse_str(&s) {
-            Err(e) => Err(make_input_err!(
-                "Failed to convert string to WorkerId : {} : {:?}",
-                s,
-                e
-            )),
-            Ok(my_uuid) => Ok(WorkerId(my_uuid.as_u128())),
-        }
-    }
-}
-
 /// Notifications to send worker about a requested state change.
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.

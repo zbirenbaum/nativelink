@@ -44,9 +44,23 @@ use crate::platform_properties::PlatformProperties;
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
+pub type WorkerTimestamp = u64;
 /// Unique id of worker.
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
-pub struct OperationId(pub u128);
+pub struct Id { id: u128 }
+
+pub type OperationId = Id;
+pub type WorkerId = Id;
+
+impl Id {
+    pub fn new() -> Self {
+        Self { id: uuid::Uuid::new_v4().as_u128() }
+    }
+}
+
+impl Default for OperationId {
+    fn default() -> Self { Self::new() }
+}
 
 impl TryFrom<&str> for OperationId {
     type Error = Error;
@@ -57,7 +71,7 @@ impl TryFrom<&str> for OperationId {
                 s,
                 e
             )),
-            Ok(my_uuid) => Ok(OperationId(my_uuid.as_u128())),
+            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
         }
     }
 }
@@ -65,7 +79,7 @@ impl TryFrom<&str> for OperationId {
 impl std::fmt::Display for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
-        let operation_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        let operation_id_str = Uuid::from_u128(self.id).hyphenated().encode_lower(&mut buf);
         write!(f, "{operation_id_str}")
     }
 }
@@ -73,7 +87,7 @@ impl std::fmt::Display for OperationId {
 impl std::fmt::Debug for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = Uuid::encode_buffer();
-        let operation_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
+        let operation_id_str = Uuid::from_u128(self.id).hyphenated().encode_lower(&mut buf);
         f.write_str(operation_id_str)
     }
 }
@@ -87,7 +101,7 @@ impl TryFrom<String> for OperationId {
                 s,
                 e
             )),
-            Ok(my_uuid) => Ok(OperationId(my_uuid.as_u128())),
+            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
         }
     }
 }

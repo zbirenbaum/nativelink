@@ -140,7 +140,7 @@ impl WorkerApiServer {
         let worker_id = {
             let worker_id = Uuid::new_v4().as_u128();
             let worker = Worker::new(
-                WorkerId(worker_id),
+                WorkerId::new(),
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),

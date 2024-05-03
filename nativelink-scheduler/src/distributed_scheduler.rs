@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
 use async_trait::async_trait;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId, WorkerTimestamp};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::watch;
@@ -24,7 +24,7 @@ use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::state_manager::StateManager;
 // use crate::state_manager::StateManager;
-use crate::worker::{Worker, WorkerId, WorkerTimestamp};
+use crate::worker::Worker;
 use crate::worker_scheduler::WorkerScheduler;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_config::schedulers::WorkerAllocationStrategy;
@@ -72,7 +72,7 @@ impl ActionScheduler for SchedulerInstance {
         &self,
         _instance_name: &str,
     ) -> Result<Arc<PlatformPropertyManager>, Error> {
-        todo!()
+        Ok(self.platform_property_manager.clone())
     }
 
     async fn find_existing_action(
@@ -217,11 +217,11 @@ impl WorkerScheduler for SchedulerInstance {
     /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
         &self,
-        _worker_id: &WorkerId,
-        _action_info_hash_key: &ActionInfoHashKey,
-        _action_stage: ActionStage,
+        worker_id: &WorkerId,
+        action_info_hash_key: &ActionInfoHashKey,
+        action_stage: ActionStage,
     ) -> Result<(), Error> {
-        todo!()
+        self.state_manager.update_action(worker_id, action_info_hash_key, action_stage).await
     }
 
     /// Event for when the keep alive message was received from the worker.

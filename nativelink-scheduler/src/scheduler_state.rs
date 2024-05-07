@@ -10,11 +10,27 @@ use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionName
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{ AsyncCommands, AsyncIter, Client, FromRedisValue, Pipeline, RedisError, ToRedisArgs };
 use redis_macros::{FromRedisValue, ToRedisArgs};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use tokio::sync::watch;
 use tonic::async_trait;
 use uuid::Uuid;
 
+trait Stringify {
+    fn as_string(&self) -> String;
+}
+
+#[derive(Clone, ToRedisArgs, FromRedisValue, Deserialize, PartialEq)]
+struct KeyWrapper<T: Stringify> {
+    inner: T
+}
+impl<T: Stringify> Serialize for KeyWrapper<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.inner.as_string())
+    }
+}
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
 pub enum WorkerFields {
     Workers,

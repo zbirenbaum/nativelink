@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use futures::future::Ready;
-use futures::{Future, StreamExt};
+use futures::{Future, FutureExt, StreamExt};
 use nativelink_error::{make_input_err, Code, ResultExt, Error};
 use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_util::common::DigestInfo;
@@ -20,7 +20,7 @@ use crate::scheduler_state::{ActionFields, ActionMaps, ActionSchedulerStateStore
 use async_trait::async_trait;
 
 pub struct RedisAdapter {
-    client: redis::Client,
+    pub client: redis::Client,
 }
 
 impl RedisAdapter {
@@ -155,7 +155,6 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut stream = sub.into_on_message();
         // This hangs forever atm
         let (tx, rx) = tokio::sync::watch::channel(state);
-        let mut rx_clone = rx.clone();
         // Hand tuple of rx and future to pump the rx
         tokio::spawn(async move {
             let closed_fut = tx.closed();
@@ -166,7 +165,6 @@ impl ActionSchedulerStateStore for RedisAdapter {
                     msg = stream.next() => {
                         let state: ActionState = msg.unwrap().get_payload().unwrap();
                         let value = Arc::new(state);
-                        rx_clone.mark_changed();
                         if tx.send(value).is_err() {
                             return
                         }
@@ -198,6 +196,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         id: OperationId,
         stage: ActionStage,
     ) -> Result<(), Error> {
+        // Currently not removing from queued when assigned and set to executing
         let mut con = self.get_multiplex_connection().await?;
         let mut pipe = Pipeline::new();
         pipe
@@ -218,7 +217,8 @@ impl ActionSchedulerStateStore for RedisAdapter {
             }
         }
         pipe.query_async(&mut con).await?;
-        self.publish_action_state(id).await?;
+        let res = self.publish_action_state(id).await?;
+        println!("Published outer {:?}", res);
         Ok(())
     }
 
@@ -244,7 +244,8 @@ impl ActionSchedulerStateStore for RedisAdapter {
             stage,
             action_digest,
         };
-        con.publish(id, action_state).await?;
+        let res = con.publish(id, action_state).await?;
+        println!("Published inner: {:?}", res);
         Ok(())
 
     }
@@ -256,11 +257,13 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut con = self.get_multiplex_connection().await?;
         let id = OperationId::new();
         let name = ActionName::from(action_info);
+        let is_single = ActionName::to_redis_args(&name).is_single_arg();
+        println!("{:?}", is_single);
 
         let mut pipe = Pipeline::new();
-        let st: String = pipe
+        let (_, id): (redis::Value, OperationId) = pipe
             .atomic()
-            .set(&name, id).ignore()
+            .set(&name, id)
             .set(ActionFields::Info(id), action_info).ignore()
             .set(ActionFields::Digest(id), action_info.unique_qualifier.digest).ignore()
             .set(ActionFields::Stage(id), ActionStage::Queued).ignore()
@@ -268,11 +271,9 @@ impl ActionSchedulerStateStore for RedisAdapter {
             .set(ActionFields::Attempts(id), 0).ignore()
             .zadd(ActionMaps::Queued, id, action_info.priority).ignore()
             .get(&name)
-            .get(ActionFields::Stage(id))
             .query_async(&mut con)
             .await?;
-
-        OperationId::try_from(st)
+        Ok(id)
     }
 
     async fn find_action_by_hash_key(

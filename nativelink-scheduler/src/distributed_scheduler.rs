@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
 use async_trait::async_trait;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId, WorkerTimestamp};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, Id, OperationId, WorkerId, WorkerTimestamp};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::watch;
@@ -59,7 +59,11 @@ impl SchedulerInstance {
             workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy))
         }
     }
+
+
     pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+        // Try to remove action from running actions otherwise error
+        // If action atttemps > max retries:
     // match self.active_actions.remove(action_info) {
     //     Some(running_action) => {
     //         let mut awaited_action = running_action;

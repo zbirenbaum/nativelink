@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::google::longrunning::Operation;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionState, OperationId, DEFAULT_EXECUTION_PRIORITY
+    ActionInfo, ActionInfoHashKey, ActionState, DEFAULT_EXECUTION_PRIORITY,
 };
 use nativelink_util::grpc_utils::ConnectionManager;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -237,7 +237,7 @@ impl ActionScheduler for GrpcScheduler {
 
     async fn find_existing_action(
         &self,
-        unique_qualifier: &ActionInfoHashKey
+        unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
         let request = WaitExecutionRequest {
             name: unique_qualifier.action_name(),

@@ -1121,6 +1121,7 @@ impl TryFrom<Operation> for ActionState {
     }
 }
 
+pub type ActionStateMessage = Option<Arc<ActionState>>;
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]

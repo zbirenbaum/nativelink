@@ -90,7 +90,7 @@ impl StateManager {
     // pub async fn find_existing_action(
     //     &self,
     //     unique_qualifier: &ActionInfoHashKey,
-    // ) -> Option<watch::Receiver<Arc<ActionState>>> {
+    // ) -> Option<watch::Receiver<Option<Arc<ActionState>>>> {
     //     self.inner.find_existing_action(unique_qualifier).await
     // }
     //

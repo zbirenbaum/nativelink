@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use crate::platform_property_manager::{self, PlatformPropertyManager};
 use crate::redis_adapter::RedisAdapter;
-use crate::scheduler_state::{ActionSchedulerStateStore, WorkerSchedulerStateStore};
+use crate::scheduler_state::{ActionSchedulerStateStore };
 use tracing::error;
 use lru::LruCache;
 /// Engine used to manage the queued/running tasks and relationship with
@@ -55,22 +55,15 @@ impl StateManager {
             map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
     }
 
-    pub async fn get_worker_actions(
-        &self,
-        worker_id: &WorkerId
-    ) -> Result<Vec<OperationId>, Error> {
-        self.inner.get_actions_running_on_worker(worker_id).await
-    }
-
     /// Updates the status of an action to the scheduler from the worker.
     pub async fn update_action(
         &self,
-        worker_id: &WorkerId,
+        _worker_id: &WorkerId,
         unique_qualifier: &ActionInfoHashKey,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         let operation_id = self.inner.get_operation_id_for_action(unique_qualifier).await?;
-        self.inner.update_action_stage(Some(*worker_id), operation_id, action_stage).await
+        self.inner.update_action_stage(operation_id, action_stage).await
     }
 
     pub async fn find_existing_action(
@@ -85,6 +78,31 @@ impl StateManager {
             Err(_) => None
         }
     }
+
+    pub async fn get_operation_id(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Result<OperationId, Error> {
+        self.inner
+            .get_operation_id_for_action(unique_qualifier).await
+            .map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
+    }
+
+    pub async fn update_action_with_internal_error(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+        err: Error
+    ) -> Result<(), Error> {
+
+        let operation_id = self.get_operation_id(unique_qualifier).await?;
+        let due_to_backpressure = err.code == Code::ResourceExhausted;
+        self.inner.dec_action_attempts(&operation_id);
+        self.inner.
+        self.inner.update_action_stage(id, stage)
+
+
+    }
+
 }
     //
     // pub async fn find_existing_action(

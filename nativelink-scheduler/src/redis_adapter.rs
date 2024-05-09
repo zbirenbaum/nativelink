@@ -9,14 +9,14 @@ use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::platform_properties::{self, PlatformProperties, PlatformPropertyValue};
 use prost::Message;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionName, ActionResult, ActionStage, ActionState, OperationId, WorkerId };
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionName, ActionResult, ActionStage, ActionState, OperationId };
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{ AsyncCommands, AsyncIter, Client, Commands, Connection, FromRedisValue, Pipeline, RedisError, RedisResult, ToRedisArgs };
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use uuid::Uuid;
-use crate::scheduler_state::{ActionFields, ActionMaps, ActionSchedulerStateStore, WorkerFields, WorkerSchedulerStateStore};
+use crate::scheduler_state::{ActionFields, ActionSchedulerStateStore };
 use crate::worker::WorkerUpdate;
 use async_trait::async_trait;
 
@@ -44,72 +44,33 @@ impl RedisAdapter {
     }
 }
 
-#[async_trait]
-impl WorkerSchedulerStateStore for RedisAdapter {
-    // Create a worker Id and map it to the name in the config. Worker can then always resolve its id
-
-    async fn get_actions_running_on_worker(
-        &self,
-        worker_id: &WorkerId
-    ) -> Result<Vec<OperationId>, Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        Ok(con.smembers(WorkerFields::RunningOperations(worker_id.to_owned())).await?)
-    }
-
-    async fn assign_actions_to_worker(
-        &self,
-        worker_id: &WorkerId,
-        operation_ids: Vec<OperationId>
-    ) -> Result<Vec<OperationId>, Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        let mut pipe = Pipeline::new();
-        let action_kv: Vec<(ActionMaps, &WorkerId)> = operation_ids.iter().map(|id| {
-            (ActionMaps::Assigned(*id), worker_id)
-        }).collect();
-        pipe
-            .atomic()
-            .sadd(WorkerFields::RunningOperations(*worker_id), operation_ids)
-            .mset(&action_kv);
-        Ok(pipe.query_async(&mut con).await?)
-    }
-
-    async fn remove_actions_from_worker(
-        &self,
-        worker_id: &WorkerId,
-        operation_ids: Vec<OperationId>,
-    ) -> Result<(), Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        let mut pipe = Pipeline::new();
-        let action_k: Vec<ActionMaps> = operation_ids.iter().map(|id| {
-            ActionMaps::Assigned(*id)
-        }).collect();
-        pipe
-            .atomic()
-            .srem(WorkerFields::RunningOperations(*worker_id), operation_ids)
-            .del(&action_k);
-        Ok(pipe.query_async(&mut con).await?)
-    }
-
-    async fn get_worker_running_action(
-        &self,
-        operation_id: &OperationId
-    ) -> Result<Option<WorkerId>, Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        Ok(con.get(ActionMaps::Assigned(*operation_id)).await?)
-    }
-}
 
 #[async_trait]
 impl ActionSchedulerStateStore for RedisAdapter {
-    fn inc_action_attempts(
+    fn dec_action_attempts(
         &self,
-        operation_id: &OperationId
+        operation_id: &OperationId,
     ) -> Result<u64, Error> {
-        let key = ActionFields::Attempts(*operation_id);
+        let key = ActionFields::Attempts;
         let mut con = self.get_connection()?;
         // let mut con = &self.().await?;
         let (attempts,) : (u64,) = redis::transaction(&mut con, &[key.clone()], |con, pipe| {
-            let old_val : isize = con.get(&key)?;
+            let old_val : isize = con.hget(&key, &operation_id)?;
+            pipe
+                .set(&key, old_val - 1).ignore()
+                .get(&key).query(con)
+        })?;
+        Ok(attempts)
+    }
+    fn inc_action_attempts(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<u64, Error> {
+        let key = ActionFields::Attempts;
+        let mut con = self.get_connection()?;
+        // let mut con = &self.().await?;
+        let (attempts,) : (u64,) = redis::transaction(&mut con, &[key.clone()], |con, pipe| {
+            let old_val : isize = con.hget(&key, &operation_id)?;
             pipe
                 .set(&key, old_val + 1).ignore()
                 .get(&key).query(con)
@@ -117,28 +78,19 @@ impl ActionSchedulerStateStore for RedisAdapter {
         Ok(attempts)
     }
 
-    //TODO: This really needs to be atomic and in a tx but key watching is a mess
-    async fn complete_action(
+    async fn set_action_assignment(
         &self,
-        operation_id: &OperationId,
-        result: ActionResult
+        operation_id: OperationId,
+        assigned: bool,
     ) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
-        // let mut con = &self.().await?;
-        if let Some(worker_id) = self.get_worker_running_action(operation_id).await? {
-            self.remove_actions_from_worker(&worker_id, vec![*operation_id]).await?;
+        let fut = {
+            if assigned {
+                return con.hset(ActionStage, operation_id, ActionStage::Executing)
+            else {
+                return con.hdel(ActionStage, operation_id, ActionStage::Queued)
+            }
         }
-        // self.update_action_stage(operation_id, ActionStage::Completed(result)).await?;
-
-        let mut pipe = Pipeline::new();
-        // This is really inefficient but for POC don't need to keep track of which state its in.
-        pipe
-            .zrem(ActionMaps::Queued, operation_id)
-            .del(ActionMaps::Assigned(*operation_id))
-            .set(ActionMaps::Completed(*operation_id), result)
-            .query_async(&mut con).await?;
-        Ok(())
-
     }
 
     async fn subscribe<'a>(
@@ -196,7 +148,6 @@ impl ActionSchedulerStateStore for RedisAdapter {
 
     async fn update_action_stage(
         &self,
-        worker_id: Option<WorkerId>,
         id: OperationId,
         stage: ActionStage,
     ) -> Result<(), Error> {
@@ -205,31 +156,20 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut pipe = Pipeline::new();
         pipe
             .atomic()
-            .set(ActionFields::Stage(id), stage);
-        if let Some(worker) = worker_id {
-            pipe
-                .sadd(WorkerFields::RunningOperations(worker), id)
-                .set(ActionMaps::Assigned(id), worker);
-        }
-        else {
-            // If there was a worker but the action is now unassigned, then remove the worker
-            let maybe_worker_id = con.get(ActionMaps::Assigned(id)).await?;
-            if let Some(prev_worker) = maybe_worker_id {
-                pipe
-                    .srem(WorkerFields::RunningOperations(prev_worker), id)
-                    .del(ActionMaps::Assigned(id));
-            }
-        }
-        pipe.query_async(&mut con).await?;
-        let res = self.publish_action_state(id).await?;
-        println!("Published outer {:?}", res);
+            .hset(ActionFields::Stage, id, stage)
+            .query_async(&mut con).await?;
+        self.publish_action_state(id).await?;
         Ok(())
     }
 
     async fn get_action_state(&self, id: OperationId) -> Result<ActionState, Error> {
         let mut con = self.get_multiplex_connection().await?;
-        let keys = vec![ActionFields::Stage(id), ActionFields::Digest(id)];
-        let (stage, action_digest) = con.mget(keys).await?;
+        let mut pipe = Pipeline::new();
+        let (stage, action_digest) = pipe
+            .atomic()
+            .hget(ActionFields::Stage, id)
+            .hget(ActionFields::Digest, id)
+            .query_async(&mut con).await?;
         Ok(ActionState {
             operation_id: id,
             stage,
@@ -239,9 +179,9 @@ impl ActionSchedulerStateStore for RedisAdapter {
     }
     async fn publish_action_state(&self, id: OperationId) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
-        // let keys = vec![ActionFields::Stage(id), ActionFields::Digest(id)];
-        let stage = con.get(ActionFields::Stage(id)).await?;
-        let action_digest = con.get(ActionFields::Digest(id)).await?;
+        // let keys = vec![ActionFields::Stage(id), ActionFields::Digest, id];
+        let stage = con.hget(ActionFields::Stage, id).await?;
+        let action_digest = con.hget(ActionFields::Digest, id).await?;
         // let (stage, action_digest) = con.mget(keys).await?;
         let action_state = ActionState {
             operation_id: id,
@@ -261,19 +201,15 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut con = self.get_multiplex_connection().await?;
         let id = OperationId::new();
         let name = ActionName::from(action_info);
-        let is_single = ActionName::to_redis_args(&name).is_single_arg();
-        println!("{:?}", is_single);
-
         let mut pipe = Pipeline::new();
         let (_, id): (redis::Value, OperationId) = pipe
             .atomic()
             .set(&name, id)
-            .set(ActionFields::Info(id), action_info).ignore()
-            .set(ActionFields::Digest(id), action_info.unique_qualifier.digest).ignore()
-            .set(ActionFields::Stage(id), ActionStage::Queued).ignore()
-            .set(ActionFields::Name(id), &name).ignore()
-            .set(ActionFields::Attempts(id), 0).ignore()
-            .zadd(ActionMaps::Queued, id, action_info.priority).ignore()
+            .hset(ActionFields::Info, id, action_info).ignore()
+            .hset(ActionFields::Digest, id, action_info.unique_qualifier.digest).ignore()
+            .hset(ActionFields::Stage, id, ActionStage::Queued).ignore()
+            .hset(ActionFields::Name, id, &name).ignore()
+            .hset(ActionFields::Attempts, id, 0).ignore()
             .get(&name)
             .query_async(&mut con)
             .await?;
@@ -302,30 +238,19 @@ impl ActionSchedulerStateStore for RedisAdapter {
 
     }
 
-    // returns operation id and priority tuples
-    async fn get_next_n_queued_actions(
+    async fn get_queued_actions(
         &self,
-        num_actions: u64
-    ) -> Result<Vec<(OperationId, i32)>, Error> {
+    ) -> Result<Vec<OperationId>, Error> {
         let mut con = self.get_multiplex_connection().await?;
-        Ok(con.zrevrange(ActionMaps::Queued, 0, isize::try_from(num_actions).unwrap()).await?)
-    }
-
-    async fn remove_actions_from_queue(
-        &self,
-        actions: Vec<OperationId>
-    ) -> Result<(), Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        Ok(con.zrem(ActionMaps::Queued, &actions).await?)
-    }
-
-
-    async fn add_actions_to_queue(
-        &self,
-        actions_with_priority: Vec<(OperationId, i32)>
-    ) -> Result<(), Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        Ok(con.zadd_multiple(ActionMaps::Queued, &actions_with_priority).await?)
+        let all_actions: Vec<(OperationId, ActionStage)> = con.hgetall(ActionFields::Stage).await?;
+        Ok(all_actions.iter().filter_map(
+            |(id, stage)| {
+                if *stage == ActionStage::Queued {
+                    return Some(id.clone())
+                }
+                None
+            }
+        ).collect())
     }
 
     // Return the action stage here.
@@ -339,20 +264,10 @@ impl ActionSchedulerStateStore for RedisAdapter {
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         let mut con = self.get_multiplex_connection().await?;
         let name = ActionName::from(action_info);
-        let existing_id: Option<OperationId> = con.get(&name).await?;
+        let existing_id: Option<OperationId> = con.hget(ActionFields::Id, &name).await?;
         let (operation_id, stage) = match existing_id {
             Some(id) => {
-                let stage: ActionStage = con.get(ActionFields::Stage(id)).await?;
-                if stage == ActionStage::Queued {
-                    // Update priority if new priority is higher
-                    redis::cmd("ZADD")
-                        .arg(ActionMaps::Queued)
-                        .arg("LT")
-                        .arg(action_info.priority)
-                        .arg(id)
-                        .query_async(&mut con)
-                        .await?
-                }
+                let stage: ActionStage = con.hget(ActionFields::Stage, id).await?;
                 (id, stage)
             },
             None => {

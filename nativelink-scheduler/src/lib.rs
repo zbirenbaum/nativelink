@@ -24,3 +24,4 @@ pub mod state_manager;
 pub mod worker;
 pub mod worker_scheduler;
 pub mod scheduler_state;
+pub mod scheduler_instance_state;

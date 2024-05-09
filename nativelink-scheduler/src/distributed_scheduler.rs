@@ -13,6 +13,8 @@
 // limitations under the License.
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::sync::Arc;
+use std::time::Duration;
+use futures::Future;
 use parking_lot::Mutex;
 use async_trait::async_trait;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, Id, OperationId, WorkerId, WorkerTimestamp};
@@ -26,40 +28,152 @@ use crate::state_manager::StateManager;
 // use crate::state_manager::StateManager;
 use crate::worker::{Worker, WorkerUpdate};
 use crate::worker_scheduler::WorkerScheduler;
-use nativelink_error::{error_if,  make_input_err, Error, ResultExt};
+use tracing::warn;
+use nativelink_error::{error_if, make_err, make_input_err, Error, ResultExt, Code};
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use lru::LruCache;
 use tracing::error;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
+
+/// Default timeout for workers in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+
+/// Default timeout for recently completed actions in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_RETAIN_COMPLETED_FOR_S: u64 = 60;
+
+/// Default times a job can retry before failing.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_MAX_JOB_RETRIES: usize = 3;
+
+pub struct SchedulerInstanceState {
+    state_manager: StateManager,
+    workers: Mutex<Workers>,
+    tasks_or_workers_change_notify: Arc<Notify>,
+    platform_property_manager: Arc<PlatformPropertyManager>,
+    worker_timeout_s: u64,
+    retain_completed_for_s: u64,
+    max_job_retries: usize,
+}
 
 pub struct SchedulerInstance {
-    platform_property_manager: Arc<PlatformPropertyManager>,
-    state_manager: Arc<StateManager>,
-    tasks_or_workers_change_notify: Arc<Notify>,
-    workers: Mutex<Workers>
+    inner: Arc<SchedulerInstanceState>,
+    task_worker_matching_future: JoinHandle<()>,
 }
 
 impl SchedulerInstance {
-    pub fn new(
+    #[inline]
+    #[must_use]
+    pub fn new(scheduler_cfg: &nativelink_config::schedulers::SchedulerInstance) -> Self {
+        Self::new_with_callback(scheduler_cfg, || {
+            // The cost of running `do_try_match()` is very high, but constant
+            // in relation to the number of changes that have happened. This means
+            // that grabbing this lock to process `do_try_match()` should always
+            // yield to any other tasks that might want the lock. The easiest and
+            // most fair way to do this is to sleep for a small amount of time.
+            // Using something like tokio::task::yield_now() does not yield as
+            // aggresively as we'd like if new futures are scheduled within a future.
+            tokio::time::sleep(Duration::from_millis(1))
+        })
+    }
+
+    pub fn new_with_callback<
+        Fut: Future<Output = ()> + Send,
+        F: Fn() -> Fut + Send + Sync + 'static,
+    >(
         scheduler_cfg: &nativelink_config::schedulers::SchedulerInstance,
+        on_matching_engine_run: F,
     ) -> Self {
+
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             scheduler_cfg
                 .supported_platform_properties
                 .clone()
                 .unwrap_or_default(),
         ));
-        Self {
+        let mut worker_timeout_s = scheduler_cfg.worker_timeout_s;
+        if worker_timeout_s == 0 {
+            worker_timeout_s = DEFAULT_WORKER_TIMEOUT_S;
+        }
+
+        let mut retain_completed_for_s = scheduler_cfg.retain_completed_for_s;
+        if retain_completed_for_s == 0 {
+            retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
+        }
+
+        let mut max_job_retries = scheduler_cfg.max_job_retries;
+        if max_job_retries == 0 {
+            max_job_retries = DEFAULT_MAX_JOB_RETRIES;
+        }
+
+        let tasks_or_workers_change_notify = Arc::new(Notify::new());
+        let inner = Arc::new(SchedulerInstanceState {
+            workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy)),
+            state_manager: StateManager::new(scheduler_cfg.db_url.clone()),
             platform_property_manager,
-            tasks_or_workers_change_notify: Arc::new(Notify::new()),
-            state_manager: Arc::new(StateManager::new(
-                scheduler_cfg.db_url.clone()
-            )),
-            workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy))
+            tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
+            worker_timeout_s,
+            retain_completed_for_s,
+            max_job_retries,
+        });
+
+        let weak_inner = Arc::downgrade(&inner);
+        Self {
+            inner,
+            task_worker_matching_future: tokio::spawn(async move {
+                // Break out of the loop only when the inner is dropped.
+                loop {
+                    tasks_or_workers_change_notify.notified().await;
+                    match weak_inner.upgrade() {
+                        // Note: According to `parking_lot` documentation, the default
+                        // `Mutex` implementation is eventual fairness, so we don't
+                        // really need to worry about this thread taking the lock
+                        // starving other threads too much.
+                        Some(inner) => {
+                            inner.do_try_match();
+                        }
+                        // If the inner went away it means the scheduler is shutting
+                        // down, so we need to resolve our future.
+                        None => return,
+                    };
+                    on_matching_engine_run().await;
+                }
+                // Unreachable.
+            }),
         }
     }
 
+    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.inner.workers.lock();
+        inner.workers.contains(worker_id)
+    }
+
+    /// Checks to see if the worker can accept work. Should only be used in unit tests.
+    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
+        let mut inner = self.inner.workers.lock();
+        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+        })?;
+        Ok(worker.can_accept_work())
+    }
+
+    /// A unit test function used to send the keep alive message to the worker from the server.
+    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        let mut inner = self.inner.workers.lock();
+        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
+        })?;
+        worker.keep_alive()
+    }
+
+}
+impl SchedulerInstanceState {
+    pub async fn do_try_match(&self) {
+
+    }
 
     pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
         // Try to remove action from running actions otherwise error
@@ -113,38 +227,34 @@ impl SchedulerInstance {
     //     }
     }
 
-    #[must_use]
-    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.workers.lock();
-        inner.workers.contains(worker_id)
-    }
-
-    /// Checks to see if the worker can accept work. Should only be used in unit tests.
-    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
-        let mut inner = self.workers.lock();
-        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
-            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-        })?;
-        Ok(worker.can_accept_work())
-    }
-
-    /// A unit test function used to send the keep alive message to the worker from the server.
-    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.workers.lock();
-        let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
-            make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
-        })?;
-        worker.keep_alive()
+    fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
+        if let Some(mut worker) = self.remove_worker(worker_id) {
+            // We don't care if we fail to send message to worker, this is only a best attempt.
+            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for action_info in worker.running_action_infos.drain() {
+                self.retry_action(&action_info, worker_id, err.clone());
+            }
+        }
+        // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
+        self.tasks_or_workers_change_notify.notify_one();
     }
 }
 
+
+impl Drop for SchedulerInstance {
+    fn drop(&mut self) {
+        self.task_worker_matching_future.abort();
+    }
+}
 #[async_trait]
 impl ActionScheduler for SchedulerInstance {
     async fn add_action(
         &self,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        self.state_manager.add_action(action_info).await
+        self.inner.state_manager.add_action(action_info).await
     }
 
     /// Returns the platform property manager.
@@ -244,7 +354,7 @@ impl Workers {
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
     // simulation of worst cases in a single threaded environment.
-    fn find_worker_for_action_mut<'a>(
+    fn find_worker_with_properties_mut<'a>(
         &'a mut self,
         action_platform_properties: &PlatformProperties,
     ) -> Option<&'a mut Worker> {
@@ -271,7 +381,7 @@ impl Workers {
 }
 
 #[async_trait]
-impl WorkerScheduler for SchedulerInstance {
+impl WorkerScheduler for SchedulerInstanceState {
     /// Returns the platform property manager.
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
         &self.platform_property_manager
@@ -280,7 +390,13 @@ impl WorkerScheduler for SchedulerInstance {
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         let mut workers = self.workers.lock();
-        workers.add_worker(worker)
+        let worker_id = worker.id.clone();
+        let res = workers.add_worker(worker);
+        if let Err(err) = &res {
+            workers.immediate_evict_worker(&worker_id, err.clone());
+        }
+        self.tasks_or_workers_change_notify.notify_one();
+        res
     }
 
     /// Similar to `update_action()`, but called when there was an error that is not
@@ -316,7 +432,6 @@ impl WorkerScheduler for SchedulerInstance {
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) {
         let err = nativelink_error::make_err!(nativelink_error::Code::Internal, "Received request to remove worker");
-        let assigned_actions: Vec<OperationId> = self.state_manager.get_worker_actions(worker_id).await.unwrap();
         let mut inner = self.workers.lock();
         if let Some(mut worker) = inner.remove_worker(worker_id) {
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
@@ -331,8 +446,31 @@ impl WorkerScheduler for SchedulerInstance {
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
-    async fn remove_timedout_workers(&self, _now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        todo!()
+    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+        let err = nativelink_error::make_err!(nativelink_error::Code::Internal, "Received request to remove worker");
+        let mut workers = self.workers.lock();
+            let worker_ids_to_remove: Vec<WorkerId> = workers
+            .workers
+            .iter()
+            .rev()
+            .map_while(|(worker_id, worker)| {
+                if worker.last_update_timestamp <= now_timestamp - self.worker_timeout_s {
+                    Some(*worker_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for worker_id in &worker_ids_to_remove {
+            let err = make_err!(
+                Code::Internal,
+                "Worker {worker_id} timed out, removing from pool"
+            );
+            warn!("{:?}", err);
+            inner.immediate_evict_worker(worker_id, err);
+        }
+
+        Ok(())
     }
 
     /// Sets if the worker is draining or not.

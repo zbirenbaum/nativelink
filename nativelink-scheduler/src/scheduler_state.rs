@@ -31,60 +31,18 @@ impl<T: Stringify> Serialize for KeyWrapper<T> {
         serializer.serialize_str(&self.inner.as_string())
     }
 }
-#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
-pub enum WorkerFields {
-    Workers,
-    // takes the key and value of the property and adds the worker to the list
-    RunningOperations(WorkerId),
-    IsPaused(WorkerId),
-    IsDraining(WorkerId),
-    PlatformProperties(WorkerId),
-}
 
 #[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
 pub enum ActionFields {
-    Digest(OperationId),
-    Name(OperationId),
-    Stage(OperationId),
-    Attempts(OperationId),
-    LastError(OperationId),
-    Info(OperationId),
+    Id,
+    Digest,
+    Name,
+    Stage,
+    Attempts,
+    LastError,
+    Info,
 }
 
-#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
-pub enum ActionMaps {
-    // Sorted set of <OperationId, Priority>
-    Queued,
-    // <OperationId, WorkerId>
-    Assigned(OperationId),
-    // <OperationId, ActionResult>
-    Completed(OperationId)
-}
-
-#[async_trait]
-pub trait WorkerSchedulerStateStore: Sync + Send + Unpin {
-    async fn get_actions_running_on_worker(
-        &self,
-        worker_id: &WorkerId
-    ) -> Result<Vec<OperationId>, Error>;
-
-    async fn assign_actions_to_worker(
-        &self,
-        worker_id: &WorkerId,
-        operation_ids: Vec<OperationId>
-    ) -> Result<Vec<OperationId>, Error>;
-
-    async fn get_worker_running_action(
-        &self,
-        operation_id: &OperationId
-    ) -> Result<Option<WorkerId>, Error>;
-
-    async fn remove_actions_from_worker(
-        &self,
-        worker_id: &WorkerId,
-        operation_id: Vec<OperationId>,
-    ) -> Result<(), Error>;
-}
 
 #[async_trait]
 pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
@@ -93,6 +51,10 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
         key: &'a str,
         initial_state: Option<Arc<ActionState>>
     ) -> Result<watch::Receiver<Arc<ActionState>>, nativelink_error::Error>;
+    fn dec_action_attempts(
+        &self,
+        operation_id: &OperationId
+    ) -> Result<u64, Error>;
 
     fn inc_action_attempts(
         &self,
@@ -104,10 +66,14 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
         unique_qualifier: &ActionInfoHashKey
     ) -> Result<OperationId, Error>;
 
+    async fn set_action_assignment(
+        &self,
+        operation_id: OperationId,
+        assigned: bool,
+    ) -> Result<(), Error>;
 
     async fn update_action_stage(
         &self,
-        worker_id: Option<WorkerId>,
         id: OperationId,
         stage: ActionStage,
     ) -> Result<(), Error>;
@@ -126,33 +92,14 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
         unique_qualifier: &ActionInfoHashKey
     ) -> Result<Option<watch::Receiver<Arc<ActionState>>>, Error>;
 
-    async fn complete_action(
-        &self,
-        operation_id: &OperationId,
-        result: ActionResult
-    ) -> Result<(), Error>;
-
     async fn get_action_info_for_actions(
         &self,
         actions: Vec<OperationId>
     ) -> Result<Vec<ActionInfo>, Error>;
 
-    // returns operation id and priority tuples
-    async fn get_next_n_queued_actions(
+    async fn get_queued_actions(
         &self,
-        num_actions: u64
-    ) -> Result<Vec<(OperationId, i32)>, Error>;
-
-    async fn remove_actions_from_queue(
-        &self,
-        actions: Vec<OperationId>
-    ) -> Result<(), Error>;
-
-
-   async fn add_actions_to_queue(
-        &self,
-        actions_with_priority: Vec<(OperationId, i32)>
-    ) -> Result<(), Error>;
+    ) -> Result<Vec<OperationId>, Error>;
 
     // Return the action stage here.
     // If the stage is ActionStage::Completed the callee

@@ -480,6 +480,7 @@ impl SimpleSchedulerImpl {
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
         let action_infos: Vec<Arc<ActionInfo>> =
             self.queued_actions.keys().rev().cloned().collect();
+        // stream from redis of action ids
         for action_info in action_infos {
             let Some(awaited_action) = self.queued_actions.get(action_info.as_ref()) else {
                 error!(

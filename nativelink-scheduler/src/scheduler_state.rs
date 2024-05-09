@@ -63,12 +63,6 @@ pub enum ActionMaps {
 
 #[async_trait]
 pub trait WorkerSchedulerStateStore: Sync + Send + Unpin {
-    async fn get_runnable_actions(
-        &self,
-        worker_id: &WorkerId
-    ) -> {
-
-    }
     async fn get_actions_running_on_worker(
         &self,
         worker_id: &WorkerId

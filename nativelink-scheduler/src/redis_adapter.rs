@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use uuid::Uuid;
 use crate::scheduler_state::{ActionFields, ActionMaps, ActionSchedulerStateStore, WorkerFields, WorkerSchedulerStateStore};
+use crate::worker::WorkerUpdate;
 use async_trait::async_trait;
 
 pub struct RedisAdapter {
@@ -46,13 +47,6 @@ impl RedisAdapter {
 #[async_trait]
 impl WorkerSchedulerStateStore for RedisAdapter {
     // Create a worker Id and map it to the name in the config. Worker can then always resolve its id
-    async fn register_worker(
-        &self,
-        name: &str,
-        platform_properties: PlatformProperties
-    ) -> Result<(), Error> {
-        
-    }
 
     async fn get_actions_running_on_worker(
         &self,
@@ -60,17 +54,6 @@ impl WorkerSchedulerStateStore for RedisAdapter {
     ) -> Result<Vec<OperationId>, Error> {
         let mut con = self.get_multiplex_connection().await?;
         Ok(con.smembers(WorkerFields::RunningOperations(worker_id.to_owned())).await?)
-    }
-
-    async fn get_next_runnable_action(
-        &self,
-        worker_id: &WorkerId
-    ) -> Result<Vec<OperationId>, Error> {
-        let mut con = self.get_multiplex_connection().await?;
-        let mut iter: redis::AsyncIter<OperationId> = con.sscan(ActionMaps::Queued).await?;
-while let Some(element) = iter.next_item().await {
-    assert!(element == 42 || element == 43);
-}
     }
 
     async fn assign_actions_to_worker(

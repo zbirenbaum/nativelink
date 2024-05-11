@@ -15,6 +15,7 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::sync::Arc;
 use std::time::Duration;
+use parking_lot::MutexGuard;
 use futures::Future;
 use parking_lot::Mutex;
 use async_trait::async_trait;
@@ -61,6 +62,10 @@ pub struct SchedulerInstanceState {
 }
 
 impl SchedulerInstanceState {
+    pub async fn get_workers_mut(&self) -> MutexGuard<'_, Workers> {
+        let lock = self.workers.lock();
+        lock
+    }
     pub async fn do_try_match(&self) {
 
 
@@ -110,129 +115,85 @@ impl ActionScheduler for SchedulerInstanceState {
     }
 }
 
-#[async_trait]
-impl WorkerScheduler for SchedulerInstanceState {
-    /// Returns the platform property manager.
-    fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
-        &self.platform_property_manager
-    }
 
-    /// Adds a worker to the scheduler and begin using it to execute actions (when able).
-    async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let mut workers = self.workers.lock();
-        let worker_id = worker.id.clone();
-        let res = workers
-            .add_worker(worker)
-            .err_tip(|| "Error while adding worker, removing from pool");
-        if let Err(err) = &res {
-            self.immediate_evict_worker(&worker_id, err.clone());
-        }
-        self.tasks_or_workers_change_notify.notify_one();
-        res
-    }
-
-    /// Similar to `update_action()`, but called when there was an error that is not
-    /// related to the task, but rather the worker itself.
-    async fn update_action_with_internal_error(
-        &self,
-        worker_id: &WorkerId,
-        unique_qualifier: &ActionInfoHashKey,
-        err: Error,
-    ) -> Result<(), Error> {
-        self.state_manager.update_action_with_internal_error(unique_qualifier).await?;
-        let Some((action_info, mut running_action)) =
-            self.active_actions.remove_entry(unique_qualifier)
-        else {
-            self.metrics
-                .update_action_with_internal_error_no_action
-                .inc();
-            error!("Could not find action info in active actions : {unique_qualifier:?}");
-            return;
-        };
-
-        let due_to_backpressure = err.code == Code::ResourceExhausted;
-        // Don't count a backpressure failure as an attempt for an action.
-        if due_to_backpressure {
-            self.metrics
-                .update_action_with_internal_error_backpressure
-                .inc();
-            running_action.attempts -= 1;
-        }
-        let Some(running_action_worker_id) = running_action.worker_id else {
-            return error!(
-            "Got a result from a worker that should not be running the action, Removing worker. Expected action to be unassigned got worker {worker_id}"
-          );
-        };
-
-        let mut workers = self.workers.lock();
-        // Clear this action from the current worker.
-        if let Some(worker) = workers.workers.get_mut(worker_id) {
-            let was_paused = !worker.can_accept_work();
-            // This unpauses, but since we're completing with an error, don't
-            // unpause unless all actions have completed.
-            worker.complete_action(&action_info);
-            // Only pause if there's an action still waiting that will unpause.
-            if (was_paused || due_to_backpressure) && worker.has_actions() {
-                worker.is_paused = true;
-            }
-        }
-
-        // Re-queue the action or fail on max attempts.
-        self.retry_action(&action_info, worker_id, err);
-        self.tasks_or_workers_change_notify.notify_one();
-        let mut workers = self.workers.lock();
-
-        workers
-            .update_action_with_internal_error(worker_id, unique_qualifier, err)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()");
-    }
-
-    /// Updates the status of an action to the scheduler from the worker.
-    async fn update_action(
-        &self,
-        worker_id: &WorkerId,
-        unique_qualifier: &ActionInfoHashKey,
-        action_stage: ActionStage,
-    ) -> Result<(), Error> {
-        self.state_manager.update_action(worker_id, unique_qualifier, action_stage).await
-    }
-
-    /// Event for when the keep alive message was received from the worker.
-    async fn worker_keep_alive_received(
-        &self,
-        worker_id: &WorkerId,
-        timestamp: WorkerTimestamp,
-    ) -> Result<(), Error> {
-        let mut workers = self.workers.lock();
-        workers
-            .refresh_lifetime(worker_id, timestamp)
-            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()");
-        Ok(())
-    }
-
-    /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, worker_id: &WorkerId) {
-        let mut workers = self.workers.lock();
-        workers.remove_worker(worker_id);
-        self.tasks_or_workers_change_notify.notify_one();
-    }
-
-    /// Removes timed out workers from the pool. This is called periodically by an
-    /// external source.
-    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        let mut workers = self.workers.lock();
-        workers.remove_timedout_workers(now_timestamp, self.worker_timeout_s);
-        Ok(())
-    }
-
-    /// Sets if the worker is draining or not.
-    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
-        let mut workers = self.workers.lock();
-        workers.set_drain_worker(worker_id, is_draining);
-        self.tasks_or_workers_change_notify.notify_one();
-        Ok(())
-    }
-
-    /// Register the metrics for the worker scheduler.
-    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
-}
+// #[async_trait]
+// impl WorkerScheduler for SchedulerInstanceState {
+//     /// Returns the platform property manager.
+//     fn get_platform_property_manager(&self) -> &PlatformPropertyManager {
+//         &self.platform_property_manager
+//     }
+//
+//     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
+//     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+//         let mut workers = self.workers.lock();
+//         let worker_id = worker.id.clone();
+//         let res = workers
+//             .add_worker(worker)
+//             .err_tip(|| "Error while adding worker, removing from pool");
+//         if let Err(err) = &res {
+//             self.immediate_evict_worker(&worker_id, err.clone());
+//         }
+//         self.tasks_or_workers_change_notify.notify_one();
+//         res
+//     }
+//
+//     /// Similar to `update_action()`, but called when there was an error that is not
+//     /// related to the task, but rather the worker itself.
+//     async fn update_action_with_internal_error(
+//         &self,
+//         _worker_id: &WorkerId,
+//         _unique_qualifier: &ActionInfoHashKey,
+//         _err: Error,
+//     ) -> Result<(), Error> {
+//         todo!()
+//     }
+//
+//     /// Updates the status of an action to the scheduler from the worker.
+//     async fn update_action(
+//         &self,
+//         worker_id: &WorkerId,
+//         unique_qualifier: &ActionInfoHashKey,
+//         action_stage: ActionStage,
+//     ) -> Result<(), Error> {
+//         self.state_manager.update_action(worker_id, unique_qualifier, action_stage).await
+//     }
+//
+//     /// Event for when the keep alive message was received from the worker.
+//     async fn worker_keep_alive_received(
+//         &self,
+//         worker_id: &WorkerId,
+//         timestamp: WorkerTimestamp,
+//     ) -> Result<(), Error> {
+//         let mut workers = self.workers.lock();
+//         workers
+//             .refresh_lifetime(worker_id, timestamp)
+//             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()");
+//         Ok(())
+//     }
+//
+//     /// Removes worker from pool and reschedule any tasks that might be running on it.
+//     async fn remove_worker(&self, worker_id: &WorkerId) {
+//         let mut workers = self.workers.lock();
+//         workers.remove_worker(worker_id);
+//         self.tasks_or_workers_change_notify.notify_one();
+//     }
+//
+//     /// Removes timed out workers from the pool. This is called periodically by an
+//     /// external source.
+//     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+//         let mut workers = self.workers.lock();
+//         workers.remove_timedout_workers(now_timestamp, self.worker_timeout_s);
+//         Ok(())
+//     }
+//
+//     /// Sets if the worker is draining or not.
+//     async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+//         let mut workers = self.workers.lock();
+//         workers.set_drain_worker(worker_id, is_draining);
+//         self.tasks_or_workers_change_notify.notify_one();
+//         Ok(())
+//     }
+//
+//     /// Register the metrics for the worker scheduler.
+//     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {}
+// }

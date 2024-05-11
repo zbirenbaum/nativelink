@@ -18,7 +18,7 @@ use hashbrown::HashMap;
 use parking_lot::{Mutex, MutexGuard};
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{error_if, make_input_err, Code, Error, ResultExt};
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::{action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, OperationId, WorkerId,}, platform_properties::PlatformPropertyValue};
 use tokio::sync::watch;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
@@ -63,7 +63,7 @@ impl StateManager {
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         let operation_id = self.inner.get_operation_id_for_action(unique_qualifier).await?;
-        self.inner.update_action_stage(operation_id, action_stage).await
+        self.inner.update_action_stages(&[(operation_id, action_stage)]).await
     }
 
     pub async fn find_existing_action(
@@ -90,19 +90,29 @@ impl StateManager {
 
     pub async fn update_action_with_internal_error(
         &self,
-        unique_qualifier: &ActionInfoHashKey,
-        err: Error
+        _unique_qualifier: &ActionInfoHashKey,
+        _err: Error
     ) -> Result<(), Error> {
-
-        let operation_id = self.get_operation_id(unique_qualifier).await?;
-        let due_to_backpressure = err.code == Code::ResourceExhausted;
-        self.inner.dec_action_attempts(&operation_id);
-        self.inner.
-        self.inner.update_action_stage(id, stage)
-
-
+        todo!()
     }
 
+    pub async fn get_queued_actions(&self) -> Result<Vec<OperationId>, Error> {
+        self.inner.get_queued_actions().await
+    }
+
+    pub async fn get_action_infos(&self, ids: &[OperationId]) -> Result<Vec<ActionInfo>, Error> {
+        self.inner.get_action_info_for_actions(ids).await
+    }
+    pub async fn remove_actions_from_queue(&self, ids: &[OperationId]) -> Result<(), Error> {
+        self.inner.remove_actions_from_queue(ids).await
+    }
+
+    pub async fn update_action_stages(
+        &self,
+        operations: &[(OperationId, ActionStage)],
+    ) -> Result<(), Error> {
+        self.inner.update_action_stages(operations)
+    }
 }
     //
     // pub async fn find_existing_action(

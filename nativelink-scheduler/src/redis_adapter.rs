@@ -16,7 +16,7 @@ use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use uuid::Uuid;
-use crate::scheduler_state::{ActionFields, ActionSchedulerStateStore };
+use crate::scheduler_state::{ActionFields, ActionMaps, ActionSchedulerStateStore };
 use crate::worker::WorkerUpdate;
 use async_trait::async_trait;
 
@@ -84,13 +84,13 @@ impl ActionSchedulerStateStore for RedisAdapter {
         assigned: bool,
     ) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
-        let fut = {
-            if assigned {
-                return con.hset(ActionStage, operation_id, ActionStage::Executing)
-            else {
-                return con.hdel(ActionStage, operation_id, ActionStage::Queued)
-            }
-        }
+        // let fut = {
+        //     if assigned {
+        //         return con.hset(ActionStage, operation_id, ActionStage::Executing)
+        //     else {
+        //         return con.hdel(ActionStage, operation_id, ActionStage::Queued)
+        //     }
+        // }
     }
 
     async fn subscribe<'a>(
@@ -146,19 +146,20 @@ impl ActionSchedulerStateStore for RedisAdapter {
         Ok(id)
     }
 
-    async fn update_action_stage(
+    async fn update_action_stages(
         &self,
-        id: OperationId,
-        stage: ActionStage,
+        operations: &[(OperationId, ActionStage)],
     ) -> Result<(), Error> {
         // Currently not removing from queued when assigned and set to executing
         let mut con = self.get_multiplex_connection().await?;
         let mut pipe = Pipeline::new();
         pipe
             .atomic()
-            .hset(ActionFields::Stage, id, stage)
+            .hset_multiple(ActionFields::Stage, operations)
             .query_async(&mut con).await?;
-        self.publish_action_state(id).await?;
+        for (id, _) in operations.iter() {
+            self.publish_action_state(*id).await?;
+        }
         Ok(())
     }
 
@@ -210,6 +211,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
             .hset(ActionFields::Stage, id, ActionStage::Queued).ignore()
             .hset(ActionFields::Name, id, &name).ignore()
             .hset(ActionFields::Attempts, id, 0).ignore()
+            .zadd(ActionMaps::Queued, id, action_info.priority).ignore()
             .get(&name)
             .query_async(&mut con)
             .await?;
@@ -231,7 +233,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
 
     async fn get_action_info_for_actions(
         &self,
-        actions: Vec<OperationId>
+        actions: &[OperationId]
     ) -> Result<Vec<ActionInfo>, Error> {
         let mut con = self.get_multiplex_connection().await?;
         Ok(con.mget(actions).await?)
@@ -242,17 +244,24 @@ impl ActionSchedulerStateStore for RedisAdapter {
         &self,
     ) -> Result<Vec<OperationId>, Error> {
         let mut con = self.get_multiplex_connection().await?;
-        let all_actions: Vec<(OperationId, ActionStage)> = con.hgetall(ActionFields::Stage).await?;
-        Ok(all_actions.iter().filter_map(
-            |(id, stage)| {
-                if *stage == ActionStage::Queued {
-                    return Some(id.clone())
-                }
-                None
-            }
-        ).collect())
+        Ok(con.zrange(ActionMaps::Queued, 0, -1).await?)
     }
 
+    async fn add_actions_to_queue(
+        &self,
+        actions_with_priority: &[(OperationId, i32)]
+    ) -> Result<(), Error> {
+        let mut con = self.get_multiplex_connection().await?;
+        Ok(con.zadd_multiple(ActionMaps::Queued, &actions_with_priority).await?)
+    }
+
+    async fn remove_actions_from_queue(
+        &self,
+        actions: &[OperationId]
+    ) -> Result<(), Error> {
+        let mut con = self.get_multiplex_connection().await?;
+        Ok(con.zrem(ActionMaps::Queued, &actions).await?)
+    }
     // Return the action stage here.
     // If the stage is ActionStage::Completed the callee
     // should request the stored result directly.
@@ -268,6 +277,16 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let (operation_id, stage) = match existing_id {
             Some(id) => {
                 let stage: ActionStage = con.hget(ActionFields::Stage, id).await?;
+                if stage == ActionStage::Queued {
+                    // Update priority if new priority is higher
+                    redis::cmd("ZADD")
+                        .arg(ActionMaps::Queued)
+                        .arg("LT")
+                        .arg(action_info.priority)
+                        .arg(id)
+                        .query_async(&mut con)
+                        .await?
+                }
                 (id, stage)
             },
             None => {

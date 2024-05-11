@@ -43,6 +43,13 @@ pub enum ActionFields {
     Info,
 }
 
+#[derive(Clone, ToRedisArgs, FromRedisValue, Serialize, Deserialize, PartialEq)]
+pub enum ActionMaps {
+    Queued,
+    Assigned,
+    Running
+}
+
 
 #[async_trait]
 pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
@@ -72,10 +79,9 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
         assigned: bool,
     ) -> Result<(), Error>;
 
-    async fn update_action_stage(
+    async fn update_action_stages(
         &self,
-        id: OperationId,
-        stage: ActionStage,
+        operations: &[(OperationId, ActionStage)],
     ) -> Result<(), Error>;
 
     async fn get_action_state(&self, id: OperationId) -> Result<ActionState, Error>;
@@ -94,13 +100,24 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
 
     async fn get_action_info_for_actions(
         &self,
-        actions: Vec<OperationId>
+        actions: &[OperationId]
     ) -> Result<Vec<ActionInfo>, Error>;
 
     async fn get_queued_actions(
         &self,
     ) -> Result<Vec<OperationId>, Error>;
 
+
+    async fn remove_actions_from_queue(
+        &self,
+        actions: &[OperationId]
+    ) -> Result<(), Error>;
+
+
+   async fn add_actions_to_queue(
+        &self,
+        actions_with_priority: &[(OperationId, i32)]
+    ) -> Result<(), Error>;
     // Return the action stage here.
     // If the stage is ActionStage::Completed the callee
     // should request the stored result directly.

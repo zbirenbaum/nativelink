@@ -165,10 +165,8 @@ mod scheduler_tests {
             .get_operation_id_for_action(&high_priority_action.unique_qualifier)
             .await?;
         redis_adapter
-            .update_action_stage(
-                None,
-                id,
-                nativelink_util::action_messages::ActionStage::Queued,
+            .update_action_stages(
+                [id, nativelink_util::action_messages::ActionStage::Queued]
             )
             .await?;
         let mut sub_1 = join_handle.await?;
@@ -177,10 +175,8 @@ mod scheduler_tests {
 
         println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);
         redis_adapter
-            .update_action_stage(
-                Some(WorkerId::new()),
-                id,
-                nativelink_util::action_messages::ActionStage::Executing,
+            .update_action_stages(
+                [id, nativelink_util::action_messages::ActionStage::Executing]
             )
             .await?;
         println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);

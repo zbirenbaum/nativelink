@@ -30,11 +30,11 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     fn get_platform_property_manager(&self) -> &PlatformPropertyManager;
 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
-    async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
+    fn add_worker(&self, worker: Worker) -> Result<(), Error>;
 
     /// Similar to `update_action()`, but called when there was an error that is not
     /// related to the task, but rather the worker itself.
-    async fn update_action_with_internal_error(
+    fn update_action_with_internal_error(
         &self,
         worker_id: &WorkerId,
         action_info_hash_key: &ActionInfoHashKey,
@@ -50,14 +50,14 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     ) -> Result<(), Error>;
 
     /// Event for when the keep alive message was received from the worker.
-    async fn worker_keep_alive_received(
+    fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, worker_id: &WorkerId);
+    fn remove_worker(&self, worker_id: &WorkerId) -> Option<Worker>;
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.

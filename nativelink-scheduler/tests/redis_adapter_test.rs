@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{Future, FutureExt, StreamExt};
@@ -36,7 +37,7 @@ use nativelink_scheduler::distributed_scheduler::SchedulerInstance;
 use nativelink_scheduler::redis_adapter::RedisAdapter;
 use nativelink_scheduler::worker::{Worker, WorkerId, WorkerTimestamp};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_scheduler::scheduler_state::{WorkerSchedulerStateStore, ActionSchedulerStateStore};
+use nativelink_scheduler::scheduler_state::ActionSchedulerStateStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use tokio::sync::{mpsc, watch};
@@ -50,10 +51,10 @@ async fn verify_initial_connection_message(
     // Worker should have been sent an execute command.
     let expected_msg_for_worker = UpdateForWorker {
         update: Some(update_for_worker::Update::ConnectionResult(
-                        ConnectionResult {
-                            worker_id: worker_id.to_string(),
-                        },
-                )),
+            ConnectionResult {
+                worker_id: worker_id.to_string(),
+            },
+        )),
     };
     let msg_for_worker = rx.recv().await.unwrap();
     assert_eq!(msg_for_worker, expected_msg_for_worker);
@@ -68,7 +69,7 @@ fn make_system_time(add_time: u64) -> SystemTime {
 }
 
 async fn setup_new_worker(
-    scheduler: &SchedulerInstance,
+    scheduler: Arc<SchedulerInstance>,
     worker_id: WorkerId,
     props: PlatformProperties,
 ) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
@@ -84,184 +85,214 @@ async fn setup_new_worker(
 }
 
 async fn setup_action(
-    scheduler: &SchedulerInstance,
+    scheduler: Arc<SchedulerInstance>,
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
-) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+) -> Result<(watch::Receiver<Arc<ActionState>>, tokio::task::JoinHandle<()>), Error> {
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
-    let result = scheduler.add_action(action_info).await;
+    let sub = scheduler.add_action(action_info).await?;
+    let mut sub_clone = sub.clone();
+    let join_handle = tokio::task::spawn(async move {
+        let _ = sub_clone.changed().await;
+    });
+
     tokio::task::yield_now().await; // Allow task<->worker matcher to run.
-    result
+    Ok((sub, join_handle))
 }
 
 #[cfg(test)]
 mod scheduler_tests {
-    use std::thread::sleep;
-
+    use futures::future::{join, join_all};
+    use nativelink_scheduler::redis_adapter;
     use nativelink_util::action_messages::ActionStage;
     use pretty_assertions::assert_eq;
     use redis::{cmd, streams::{StreamRangeReply, StreamReadOptions, StreamReadReply}};
-    use tokio::sync::Notify;
+    use tokio::{sync::Notify, time::sleep};
 
     use super::*; // Must be declared in every module.
 
     const WORKER_TIMEOUT_S: u64 = 100;
 
+    // #[tokio::test]
+    // async fn basic_pub_sub() -> Result<(), Error> {
+    //     let high_priority_action = Arc::new(ActionInfo {
+    //         command_digest: DigestInfo::new([0u8; 32], 0),
+    //         input_root_digest: DigestInfo::new([0u8; 32], 0),
+    //         timeout: Duration::from_secs(10),
+    //         platform_properties: PlatformProperties {
+    //             properties: HashMap::new(),
+    //         },
+    //         priority: 1000,
+    //         load_timestamp: SystemTime::UNIX_EPOCH,
+    //         insert_timestamp: SystemTime::UNIX_EPOCH,
+    //         unique_qualifier: ActionInfoHashKey {
+    //             instance_name: INSTANCE_NAME.to_string(),
+    //             digest: DigestInfo::new([0u8; 32], 0),
+    //             salt: 0,
+    //         },
+    //         skip_cache_lookup: true,
+    //         digest_function: DigestHasherFunc::Sha256,
+    //     });
+    //     let _lowest_priority_action = Arc::new(ActionInfo {
+    //         command_digest: DigestInfo::new([0u8; 32], 0),
+    //         input_root_digest: DigestInfo::new([0u8; 32], 0),
+    //         timeout: Duration::from_secs(10),
+    //         platform_properties: PlatformProperties {
+    //             properties: HashMap::new(),
+    //         },
+    //         priority: 0,
+    //         load_timestamp: SystemTime::UNIX_EPOCH,
+    //         insert_timestamp: SystemTime::UNIX_EPOCH,
+    //         unique_qualifier: ActionInfoHashKey {
+    //             instance_name: INSTANCE_NAME.to_string(),
+    //             digest: DigestInfo::new([1u8; 32], 0),
+    //             salt: 0,
+    //         },
+    //         skip_cache_lookup: true,
+    //         digest_function: DigestHasherFunc::Sha256,
+    //     });
+    //     let redis_adapter = RedisAdapter::new("redis://127.0.0.1/".to_string());
+    //     let mut con = redis_adapter.client.get_connection()?;
+    //     let _: redis::Value = redis::cmd("FLUSHALL").arg("SYNC").query(&mut con).unwrap();
+    //     let mut sub_1 = redis_adapter
+    //         .add_or_merge_action(&high_priority_action)
+    //         .await.unwrap();
+    //     let join_handle = tokio::task::spawn(async move {
+    //         let _ = sub_1.changed().await;
+    //         sub_1
+    //     });
+    //
+    //     println!("Stored state");
+    //
+    //     let id = redis_adapter
+    //         .get_operation_id_for_action(&high_priority_action.unique_qualifier)
+    //         .await?;
+    //     redis_adapter
+    //         .update_action_stages(
+    //             &[(id, nativelink_util::action_messages::ActionStage::Queued)]
+    //         )
+    //         .await?;
+    //     let mut sub_1 = join_handle.await?;
+    //     let stage = sub_1.borrow_and_update().stage.clone();
+    //     println!("Received stage: {:?}", stage);
+    //
+    //     println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);
+    //     redis_adapter
+    //         .update_action_stages(
+    //             &[(id, nativelink_util::action_messages::ActionStage::Executing)]
+    //         )
+    //         .await?;
+    //     println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);
+    //
+    //
+    //
+    //
+    //     // assert_eq!(stage, ActionStage::Queued);
+    //
+    //     // redis_adapter
+    //     //     .update_action_stage(
+    //     //         None,
+    //     //         id,
+    //     //         nativelink_util::action_messages::ActionStage::Executing,
+    //     //     )
+    //     //     .await?;
+    //     // tokio::task::yield_now().await;
+    //     // let stage = sub_1.borrow_and_update().stage.clone();
+    //     // assert_eq!(stage, ActionStage::Executing);
+    //     // println!("{:?}", sub_1.borrow_and_update());
+    //     // println!("{:?}", sub_1.borrow_and_update());
+    //     // let actions = redis_adapter.get_next_n_queued_actions(2).await?;
+    //     // println!("{:?}", actions);
+    //     Ok(())
+    //
+    // }
+
     #[tokio::test]
-    async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
-        let high_priority_action = Arc::new(ActionInfo {
-            command_digest: DigestInfo::new([0u8; 32], 0),
-            input_root_digest: DigestInfo::new([0u8; 32], 0),
-            timeout: Duration::from_secs(10),
-            platform_properties: PlatformProperties {
-                properties: HashMap::new(),
+    async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Error> {
+        let WORKER_ID1: WorkerId = WorkerId::new();
+
+        let scheduler = Arc::new(SchedulerInstance::new_with_callback(
+            &nativelink_config::schedulers::SchedulerInstance {
+                worker_timeout_s: WORKER_TIMEOUT_S,
+                db_url: "redis://127.0.0.1/".to_string(),
+                ..Default::default()
             },
-            priority: 1000,
-            load_timestamp: SystemTime::UNIX_EPOCH,
-            insert_timestamp: SystemTime::UNIX_EPOCH,
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: INSTANCE_NAME.to_string(),
-                digest: DigestInfo::new([0u8; 32], 0),
-                salt: 0,
-            },
-            skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
-        });
-        let _lowest_priority_action = Arc::new(ActionInfo {
-            command_digest: DigestInfo::new([0u8; 32], 0),
-            input_root_digest: DigestInfo::new([0u8; 32], 0),
-            timeout: Duration::from_secs(10),
-            platform_properties: PlatformProperties {
-                properties: HashMap::new(),
-            },
-            priority: 0,
-            load_timestamp: SystemTime::UNIX_EPOCH,
-            insert_timestamp: SystemTime::UNIX_EPOCH,
-            unique_qualifier: ActionInfoHashKey {
-                instance_name: INSTANCE_NAME.to_string(),
-                digest: DigestInfo::new([1u8; 32], 0),
-                salt: 0,
-            },
-            skip_cache_lookup: true,
-            digest_function: DigestHasherFunc::Sha256,
-        });
+            || async move {},
+        ));
         let redis_adapter = RedisAdapter::new("redis://127.0.0.1/".to_string());
         let mut con = redis_adapter.client.get_connection()?;
         let _: redis::Value = redis::cmd("FLUSHALL").arg("SYNC").query(&mut con).unwrap();
-        let mut sub_1 = redis_adapter
-            .add_or_merge_action(&high_priority_action)
-            .await.unwrap();
-        let join_handle = tokio::task::spawn(async move {
-            let _ = sub_1.changed().await;
-            sub_1
+        let action_digest1 = DigestInfo::new([99u8; 32], 512);
+        let action_digest2 = DigestInfo::new([88u8; 32], 512);
+
+        let mut rx_from_worker1 =
+            setup_new_worker(scheduler.clone(), WORKER_ID1, PlatformProperties::default()).await?;
+        let insert_timestamp1 = make_system_time(1);
+        let insert_timestamp2 = make_system_time(2);
+
+        let mut action_info_1 = make_base_action_info(insert_timestamp1);
+        action_info_1.platform_properties = PlatformProperties::default();
+        action_info_1.unique_qualifier.digest = action_digest1;
+        let mut sub_1 = scheduler.add_action(action_info_1.clone()).await?;
+        let mut sub_1_clone = sub_1.clone();
+        let join_handle_1 = tokio::task::spawn(async move {
+            let _ = sub_1_clone.changed().await;
         });
+        tokio::task::yield_now().await;
 
-        println!("Stored state");
-
-        let id = redis_adapter
-            .get_operation_id_for_action(&high_priority_action.unique_qualifier)
-            .await?;
-        redis_adapter
-            .update_action_stages(
-                [id, nativelink_util::action_messages::ActionStage::Queued]
-            )
-            .await?;
-        let mut sub_1 = join_handle.await?;
-        let stage = sub_1.borrow_and_update().stage.clone();
-        println!("Received stage: {:?}", stage);
-
-        println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);
-        redis_adapter
-            .update_action_stages(
-                [id, nativelink_util::action_messages::ActionStage::Executing]
-            )
-            .await?;
-        println!("Stored state: {:?}", redis_adapter.get_action_state(id).await?);
-
-
-
-
-        // assert_eq!(stage, ActionStage::Queued);
-
-        // redis_adapter
-        //     .update_action_stage(
-        //         None,
-        //         id,
-        //         nativelink_util::action_messages::ActionStage::Executing,
-        //     )
-        //     .await?;
-        // tokio::task::yield_now().await;
-        // let stage = sub_1.borrow_and_update().stage.clone();
-        // assert_eq!(stage, ActionStage::Executing);
-        // println!("{:?}", sub_1.borrow_and_update());
-        // println!("{:?}", sub_1.borrow_and_update());
-        // let actions = redis_adapter.get_next_n_queued_actions(2).await?;
-        // println!("{:?}", actions);
-        Ok(())
-
-    }
-    async fn stream_test() -> Result<(), Error> {
-        // 1) Create Connection
-        let client = Client::open("redis://127.0.0.1/")?;
-        let mut con = client.get_multiplexed_tokio_connection().await?;
-
-        // 2) Set / Get Key
-        con.set("my_key", "Hello world!").await?;
-        let result: String = con.get("my_key").await?;
-        println!("->> my_key: {}\n", result);
-
-        // 3) xadd to redis stream
-        con.xadd("my_stream", "*", &[("name", "name-01"), ("title", "title 01")]).await?;
-        let len: i32 = con.xlen("my_stream").await?;
-        println!("->> my_stream len {}\n", len);
-
-        // 4) xrevrange the read stream
-        let result: Option<redis::streams::StreamRangeReply> = con.xrevrange_count("my_stream", "+", "-", 10).await?;
-        if let Some(reply) = result {
-            for stream_id in reply.ids {
-                println!("->> xrevrange stream entity: {}  ", stream_id.id);
-                for (name, value) in stream_id.map.iter() {
-                    println!("  ->> {}: {}", name, redis::from_redis_value::<String>(value)?);
-                }
-                println!();
-            }
+        let execution_request_for_worker1 = UpdateForWorker {
+            update: Some(update_for_worker::Update::StartAction(StartExecute {
+                execute_request: Some(ExecuteRequest {
+                    instance_name: INSTANCE_NAME.to_string(),
+                    skip_cache_lookup: true,
+                    action_digest: Some(action_digest1.into()),
+                    digest_function: digest_function::Value::Sha256.into(),
+                    ..Default::default()
+                }),
+                salt: 0,
+                queued_timestamp: Some(insert_timestamp1.into()),
+            })),
+        };
+        {
+            // Worker1 should now see execution request.
+            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            assert_eq!(msg_for_worker, execution_request_for_worker1);
         }
 
-        // 5) Blocking xread
-        tokio::spawn(async {
-            let client = Client::open("redis://127.0.0.1/").unwrap();
-            let mut con = client.get_multiplexed_tokio_connection().await.unwrap();
-            loop {
-                let opts = StreamReadOptions::default().count(1).block(0);
-                let result: Option<StreamReadReply> = con.xread_options(&["my_stream"], &["$"], &opts).await.unwrap();
-                if let Some(reply) = result {
-                    for stream_key in reply.keys {
-                        println!("->> xread block: {}", stream_key.key);
-                        for stream_id in stream_key.ids {
-                            println!("  ->> StreamId: {:?}", stream_id);
-                        }
-                    }
-                    println!();
-                }
-            }
+        let mut action_info_2 = make_base_action_info(insert_timestamp2);
+        action_info_2.platform_properties = PlatformProperties::default();
+        action_info_2.unique_qualifier.digest = action_digest2;
+        let mut sub_2 = scheduler.add_action(action_info_2).await?;
+        let mut sub_2_clone = sub_2.clone();
+        let join_handle_2 = tokio::task::spawn(async move {
+            let _ = sub_2_clone.changed().await;
         });
 
-        // 6) Add some stream entries
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        con.xadd("my_stream", "*", &[("name", "name-02"), ("title", "title 02")]).await?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        con.xadd("my_stream", "*", &[("name", "name-03"), ("title", "title 03")]).await?;
+        tokio::task::yield_now().await; // Allow task<->worker matcher to run.
 
-        // 7) Final wait & cleanup
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        con.del("my_key").await?;
-        con.del("my_stream").await?;
+        let action_state_1 = sub_1.borrow_and_update();
+        let action_state_2 = sub_2.borrow_and_update();
+        println!("{:?}", action_state_1);
+        println!("{:?}", action_state_2);
 
-        println!("->> the end");
-
+        // Now remove worker.
+        println!("removing_worker");
+        scheduler.remove_worker(&WORKER_ID1).await;
+        {
+            println!("recv worker");
+            // Worker1 should have received a disconnect message.
+            let msg_for_worker = rx_from_worker1.recv().await.unwrap();
+            println!("worker recv");
+            assert_eq!(
+                msg_for_worker,
+                UpdateForWorker {
+                    update: Some(update_for_worker::Update::Disconnect(()))
+                }
+            );
+        }
         Ok(())
     }
 }

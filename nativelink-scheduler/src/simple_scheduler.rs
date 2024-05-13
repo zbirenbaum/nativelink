@@ -69,7 +69,7 @@ pub trait WorkerSchedulerState {
     /// Adds a worker to the pool.
     /// Note: This function will not do any task matching.
     fn add_worker(&self, worker: Worker) -> Result<(), Error>;
-    fn remove_worker(&self, worker_id: &WorkerId) -> Option<Worker>;
+    fn remove_worker(&self, worker_id: &WorkerId);
     fn find_worker_for_action_mut(
         &self,
         operation_id: &OperationId,
@@ -924,7 +924,7 @@ impl WorkerScheduler for SimpleScheduler {
             .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
-    async fn remove_worker(&self, worker_id: WorkerId) {
+    fn remove_worker(&self, worker_id: WorkerId) {
         let mut inner = self.get_inner_lock();
         inner.immediate_evict_worker(
             &worker_id,
@@ -932,7 +932,7 @@ impl WorkerScheduler for SimpleScheduler {
         );
     }
 
-    async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
+    fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
         let mut inner = self.get_inner_lock();
         self.metrics.remove_timedout_workers.wrap(move || {
             // Items should be sorted based on last_update_timestamp, so we don't need to iterate the entire

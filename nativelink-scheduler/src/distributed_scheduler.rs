@@ -14,6 +14,7 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::sync::Arc;
 use std::time::Duration;
+use async_lock::MutexGuard;
 use futures::Future;
 
 use parking_lot::Mutex;
@@ -52,7 +53,7 @@ const DEFAULT_MAX_JOB_RETRIES: usize = 3;
 
 pub struct SchedulerInstanceState {
     state_manager: StateManager,
-    workers: Mutex<Workers>,
+    workers: async_lock::Mutex<Workers>,
     tasks_or_workers_change_notify: Arc<Notify>,
     platform_property_manager: Arc<PlatformPropertyManager>,
     worker_timeout_s: u64,
@@ -67,20 +68,18 @@ impl SchedulerInstanceState {
         // to add `drain_filter`, which would in theory solve this problem, but because we need
         // to iterate the items in reverse it becomes more difficult (and it is currently an
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
+        println!("Matching");
         let queued_actions_res: Result<Vec<OperationId>, Error> = self.state_manager.get_queued_actions().await;
+        let mut worker_lock = self.workers.lock().await;
         let Ok(queued_actions) = queued_actions_res else {
             return
         };
-        let action_infos: Vec<ActionInfo> = self.state_manager.get_action_infos(&queued_actions).await.unwrap();
+        let queued_actions_with_infos: Vec<(OperationId, ActionInfo)> = self.state_manager.get_action_infos(&queued_actions).await.unwrap();
 
-        for action_info in action_infos {
-
+        for (operation_id, action_info) in queued_actions_with_infos {
             let Some(worker) = ({
-                let workers = self.workers.lock();
-                workers.find_worker_with_properties_mut(&action_info.platform_properties)
-            }) else {
-                continue;
-            };
+                worker_lock.find_worker_with_properties_mut(&action_info.platform_properties)
+            }) else { continue; };
             let worker_id = worker.id;
 
             // Try to notify our worker of the new action to run, if it fails remove the worker from the
@@ -96,7 +95,7 @@ impl SchedulerInstanceState {
                     "Worker command failed, removing worker",
                 );
                 {
-                    let workers = self.workers.lock();
+                    let mut workers = self.workers.lock().await;
                     workers.immediate_evict_worker(
                         &worker_id,
                         make_err!(
@@ -110,33 +109,56 @@ impl SchedulerInstanceState {
             }
 
             // At this point everything looks good, so remove it from the queue and add it to active actions.
-            self.state_manager.remove_actions_from_queue(&queued_actions);
+            self.state_manager.remove_actions_from_queue(&[operation_id]).await;
+            self.state_manager.update_action(&worker_id, &action_info.unique_qualifier, ActionStage::Executing).await;
 
-            Arc::make_mut(&mut awaited_action.current_state).stage = ActionStage::Executing;
-            awaited_action.worker_id = Some(worker_id);
-            let send_result = awaited_action
-                .notify_channel
-                .send(awaited_action.current_state.clone());
-            if send_result.is_err() {
-                // Don't remove this task, instead we keep them around for a bit just in case
-                // the client disconnected and will reconnect and ask for same job to be executed
-                // again.
-                event!(
-                    Level::WARN,
-                    ?action_info,
-                    ?worker_id,
-                    "Action has no more listeners during do_try_match()"
-                );
-            }
-            awaited_action.attempts += 1;
-            self.active_actions.insert(action_info, awaited_action);
+            // awaited_action.attempts += 1;
         }
+    }
+}
+
+#[async_trait]
+impl ActionScheduler for SchedulerInstanceState {
+    async fn add_action(
+        &self,
+        action_info: ActionInfo,
+    ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+        let res = self.state_manager.add_action(action_info).await;
+        self.tasks_or_workers_change_notify.notify_one();
+        res
+
+    }
+
+    /// Returns the platform property manager.
+    async fn get_platform_property_manager(
+        &self,
+        _instance_name: &str,
+    ) -> Result<Arc<PlatformPropertyManager>, Error> {
+        Ok(self.platform_property_manager.clone())
+    }
+
+    async fn find_existing_action(
+        &self,
+        unique_qualifier: &ActionInfoHashKey,
+    ) -> Option<watch::Receiver<Arc<ActionState>>> {
+        self.state_manager.find_existing_action(unique_qualifier).await
+    }
+
+    /// Cleans up the cache of recently completed actions.
+    async fn clean_recently_completed_actions(&self) {
+        todo!()
+    }
+
+    /// Register the metrics for the action scheduler.
+    fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
+
+        todo!()
     }
 }
 #[async_trait]
 impl WorkerScheduler for SchedulerInstanceState {
-    fn add_worker(&self, worker: Worker) -> Result<(), Error> {
-        let mut workers = self.workers.lock();
+    async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+        let mut workers = self.workers.lock().await;
         workers.add_worker(worker)
     }
     /// Returns the platform property manager.
@@ -147,7 +169,7 @@ impl WorkerScheduler for SchedulerInstanceState {
 
     /// Similar to `update_action()`, but called when there was an error that is not
     /// related to the task, but rather the worker itself.
-    fn update_action_with_internal_error(
+    async fn update_action_with_internal_error(
         &self,
         _worker_id: &WorkerId,
         _action_info_hash_key: &ActionInfoHashKey,
@@ -167,24 +189,38 @@ impl WorkerScheduler for SchedulerInstanceState {
     }
 
     /// Event for when the keep alive message was received from the worker.
-    fn worker_keep_alive_received(
+    async fn worker_keep_alive_received(
         &self,
-        _worker_id: &WorkerId,
-        _timestamp: WorkerTimestamp,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        todo!()
+        let mut workers = self.workers.lock().await;
+        workers
+            .refresh_lifetime(worker_id, timestamp)
+            .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")
     }
 
 
-    fn remove_worker(&self, worker_id: &WorkerId) -> Option<Worker> {
-        let mut workers = self.workers.lock();
-        workers.remove_worker(worker_id)
+    async fn remove_worker(&self, worker_id: &WorkerId) {
+        let mut workers = self.workers.lock().await;
+
+        let err = make_err!(
+            Code::Internal,
+            "Worker command failed, removing worker {}",
+            worker_id
+        );
+        warn!("{:?}", err);
+        workers.immediate_evict_worker(worker_id, err);
+        self.tasks_or_workers_change_notify.notify_one();
     }
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        todo!()
+        let mut workers = self.workers.lock().await;
+        let res = workers.remove_timedout_workers(now_timestamp, self.worker_timeout_s);
+        self.tasks_or_workers_change_notify.notify_one();
+        res
     }
 
     /// Sets if the worker is draining or not.
@@ -245,7 +281,7 @@ impl SchedulerInstance {
 
         let tasks_or_workers_change_notify = Arc::new(Notify::new());
         let inner = Arc::new(SchedulerInstanceState {
-            workers: Mutex::new(Workers::new(scheduler_cfg.allocation_strategy)),
+            workers: async_lock::Mutex::new(Workers::new(scheduler_cfg.allocation_strategy)),
             state_manager: StateManager::new(scheduler_cfg.db_url.clone()),
             platform_property_manager,
             tasks_or_workers_change_notify: tasks_or_workers_change_notify.clone(),
@@ -280,14 +316,14 @@ impl SchedulerInstance {
         }
     }
 
-    pub fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
-        let inner = self.inner.workers.lock();
+    pub async fn contains_worker_for_test(&self, worker_id: &WorkerId) -> bool {
+        let inner = self.inner.workers.lock().await;
         inner.workers.contains(worker_id)
     }
 
     /// Checks to see if the worker can accept work. Should only be used in unit tests.
-    pub fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
-        let mut inner = self.inner.workers.lock();
+    pub async fn can_worker_accept_work_for_test(&self, worker_id: &WorkerId) -> Result<bool, Error> {
+        let mut inner = self.inner.workers.lock().await;
         let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
             make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
         })?;
@@ -295,8 +331,8 @@ impl SchedulerInstance {
     }
 
     /// A unit test function used to send the keep alive message to the worker from the server.
-    pub fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
-        let mut inner = self.inner.workers.lock();
+    pub async fn send_keep_alive_to_worker_for_test(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        let mut inner = self.inner.workers.lock().await;
         let worker = inner.workers.get_mut(worker_id).ok_or_else(|| {
             make_input_err!("WorkerId '{}' does not exist in workers map", worker_id)
         })?;
@@ -310,13 +346,14 @@ impl Drop for SchedulerInstance {
         self.task_worker_matching_future.abort();
     }
 }
+
 #[async_trait]
 impl ActionScheduler for SchedulerInstance {
     async fn add_action(
         &self,
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
-        self.inner.state_manager.add_action(action_info).await
+        self.inner.add_action(action_info).await
     }
 
     /// Returns the platform property manager.
@@ -331,8 +368,7 @@ impl ActionScheduler for SchedulerInstance {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.inner.state_manager.find_existing_action(unique_qualifier);
-        self.state_manager.find_existing_action(unique_qualifier).await
+        self.inner.state_manager.find_existing_action(unique_qualifier).await
     }
 
     /// Cleans up the cache of recently completed actions.
@@ -357,6 +393,7 @@ impl WorkerScheduler for SchedulerInstance {
 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
+        self.inner.add_worker(worker).await
     }
 
 
@@ -371,16 +408,16 @@ impl WorkerScheduler for SchedulerInstance {
     }
 
     /// Event for when the keep alive message was received from the worker.
-    fn worker_keep_alive_received(
+    async fn worker_keep_alive_received(
         &self,
-        _worker_id: &WorkerId,
-        _timestamp: WorkerTimestamp,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
     ) -> Result<(), Error> {
-        todo!()
+        self.inner.worker_keep_alive_received(worker_id, timestamp).await
     }
 
-    fn remove_worker(&self, worker_id: &WorkerId) -> Option<Worker> {
-        self.inner.remove_worker(worker_id)
+    async fn remove_worker(&self, worker_id: &WorkerId) {
+        self.inner.remove_worker(worker_id).await
     }
 
     /// Removes timed out workers from the pool. This is called periodically by an
@@ -396,7 +433,7 @@ impl WorkerScheduler for SchedulerInstance {
 
     /// Similar to `update_action()`, but called when there was an error that is not
     /// related to the task, but rather the worker itself.
-    fn update_action_with_internal_error(
+    async fn update_action_with_internal_error(
         &self,
         _worker_id: &WorkerId,
         _action_info_hash_key: &ActionInfoHashKey,

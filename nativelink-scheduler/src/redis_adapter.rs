@@ -62,6 +62,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         })?;
         Ok(attempts)
     }
+
     fn inc_action_attempts(
         &self,
         operation_id: &OperationId,
@@ -80,8 +81,8 @@ impl ActionSchedulerStateStore for RedisAdapter {
 
     async fn set_action_assignment(
         &self,
-        operation_id: OperationId,
-        assigned: bool,
+        _operation_id: OperationId,
+        _assigned: bool,
     ) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
         // let fut = {
@@ -91,6 +92,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         //         return con.hdel(ActionStage, operation_id, ActionStage::Queued)
         //     }
         // }
+        Ok(())
     }
 
     async fn subscribe<'a>(
@@ -106,10 +108,12 @@ impl ActionSchedulerStateStore for RedisAdapter {
                 None => Arc::new(self.get_action_state(id).await?)
             }
         };
+        // sub.subscribe(&key).await.unwrap();
         sub.subscribe(&key).await.unwrap();
         let mut stream = sub.into_on_message();
         // This hangs forever atm
-        let (tx, mut rx) = tokio::sync::watch::channel(state);
+        let (tx, rx) = tokio::sync::watch::channel(state);
+        println!("recv count {:?}", tx.receiver_count());
         // Hand tuple of rx and future to pump the rx
         tokio::spawn(async move {
             let closed_fut = tx.closed();
@@ -118,11 +122,17 @@ impl ActionSchedulerStateStore for RedisAdapter {
             loop {
                 tokio::select! {
                     msg = stream.next() => {
+                        println!("got message");
                         let state: ActionState = msg.unwrap().get_payload().unwrap();
                         let value = Arc::new(state);
+                        println!("sending");
+                        println!("recv count {:?}", tx.receiver_count());
+                        println!("{:?}", value);
                         if tx.send(value).is_err() {
+                            println!("Error sending value");
                             return
                         }
+                        println!("sent");
                     }
                     _  = &mut closed_fut => {
                         println!("Future closed");
@@ -132,7 +142,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
 
             }
         });
-        rx.mark_changed();
+        // rx.mark_changed();
         Ok(rx)
     }
 
@@ -158,6 +168,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
             .hset_multiple(ActionFields::Stage, operations)
             .query_async(&mut con).await?;
         for (id, _) in operations.iter() {
+            // self.publish_action_state(*id).await?;
             self.publish_action_state(*id).await?;
         }
         Ok(())
@@ -189,7 +200,9 @@ impl ActionSchedulerStateStore for RedisAdapter {
             stage,
             action_digest,
         };
-        let res = con.publish(id, action_state).await?;
+        let var = id.to_string();
+        println!("{:?}", var);
+        let res = con.publish(var, action_state).await?;
         println!("Published inner: {:?}", res);
         Ok(())
 
@@ -234,9 +247,11 @@ impl ActionSchedulerStateStore for RedisAdapter {
     async fn get_action_info_for_actions(
         &self,
         actions: &[OperationId]
-    ) -> Result<Vec<ActionInfo>, Error> {
+    ) -> Result<Vec<(OperationId, ActionInfo)>, Error> {
         let mut con = self.get_multiplex_connection().await?;
-        Ok(con.mget(actions).await?)
+        let infos: Vec<ActionInfo> = con.hget(ActionFields::Info, actions).await?;
+        // clone here so that we aren't dealing with lifetime issues for POC
+        Ok(std::iter::zip(actions.to_owned(), infos).collect())
 
     }
 
@@ -252,7 +267,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         actions_with_priority: &[(OperationId, i32)]
     ) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
-        Ok(con.zadd_multiple(ActionMaps::Queued, &actions_with_priority).await?)
+        Ok(con.zadd_multiple(ActionMaps::Queued, actions_with_priority).await?)
     }
 
     async fn remove_actions_from_queue(
@@ -260,7 +275,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         actions: &[OperationId]
     ) -> Result<(), Error> {
         let mut con = self.get_multiplex_connection().await?;
-        Ok(con.zrem(ActionMaps::Queued, &actions).await?)
+        Ok(con.zrem(ActionMaps::Queued, actions).await?)
     }
     // Return the action stage here.
     // If the stage is ActionStage::Completed the callee

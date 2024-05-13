@@ -51,8 +51,8 @@ impl StateManager {
         action_info: ActionInfo,
     ) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         self.inner.add_or_merge_action(&action_info)
-            .await.
-            map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
+            .await
+            .map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
     }
 
     /// Updates the status of an action to the scheduler from the worker.
@@ -100,7 +100,7 @@ impl StateManager {
         self.inner.get_queued_actions().await
     }
 
-    pub async fn get_action_infos(&self, ids: &[OperationId]) -> Result<Vec<ActionInfo>, Error> {
+    pub async fn get_action_infos(&self, ids: &[OperationId]) -> Result<Vec<(OperationId, ActionInfo)>, Error> {
         self.inner.get_action_info_for_actions(ids).await
     }
     pub async fn remove_actions_from_queue(&self, ids: &[OperationId]) -> Result<(), Error> {
@@ -111,7 +111,7 @@ impl StateManager {
         &self,
         operations: &[(OperationId, ActionStage)],
     ) -> Result<(), Error> {
-        self.inner.update_action_stages(operations)
+        self.inner.update_action_stages(operations).await
     }
 }
     //

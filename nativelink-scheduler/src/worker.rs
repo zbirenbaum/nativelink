@@ -359,7 +359,7 @@ impl Workers {
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
-    pub async fn remove_timedout_workers(&mut self, now_timestamp: WorkerTimestamp, worker_timeout_s: u64) -> Result<(), Error> {
+    pub fn remove_timedout_workers(&mut self, now_timestamp: WorkerTimestamp, worker_timeout_s: u64) -> Result<(), Error> {
         let worker_ids_to_remove: Vec<WorkerId> = self
             .workers
             .iter()
@@ -384,9 +384,10 @@ impl Workers {
         Ok(())
     }
     /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
-    pub async fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
+    pub fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
         if let Some(mut worker) = self.remove_worker(worker_id) {
             // We don't care if we fail to send message to worker, this is only a best attempt.
+            println!("notifying");
             let _ = worker.notify_update(WorkerUpdate::Disconnect);
             // We create a temporary Vec to avoid doubt about a possible code
             // path touching the worker.running_action_infos elsewhere.
@@ -397,6 +398,7 @@ impl Workers {
     }
 
     pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+        todo!()
     }
 
     /// Sets if the worker is draining or not.

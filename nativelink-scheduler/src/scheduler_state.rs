@@ -101,7 +101,7 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
     async fn get_action_info_for_actions(
         &self,
         actions: &[OperationId]
-    ) -> Result<Vec<ActionInfo>, Error>;
+    ) -> Result<Vec<(OperationId, ActionInfo)>, Error>;
 
     async fn get_queued_actions(
         &self,

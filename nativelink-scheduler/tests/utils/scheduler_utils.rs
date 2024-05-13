@@ -26,7 +26,7 @@ pub fn make_base_action_info(insert_timestamp: SystemTime) -> ActionInfo {
     ActionInfo {
         command_digest: DigestInfo::new([0u8; 32], 0),
         input_root_digest: DigestInfo::new([0u8; 32], 0),
-        timeout: Duration::MAX,
+        timeout: Duration::from_secs(10),
         platform_properties: PlatformProperties {
             properties: HashMap::new(),
         },

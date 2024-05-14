@@ -146,7 +146,7 @@ impl ActionScheduler for SchedulerInstanceState {
 
     /// Cleans up the cache of recently completed actions.
     async fn clean_recently_completed_actions(&self) {
-        todo!()
+        self.state_manager.clean_recently_completed_actions(self.retain_completed_for_s);
     }
 
     /// Register the metrics for the action scheduler.
@@ -224,8 +224,11 @@ impl WorkerScheduler for SchedulerInstanceState {
     }
 
     /// Sets if the worker is draining or not.
-    async fn set_drain_worker(&self, _worker_id: WorkerId, _is_draining: bool) -> Result<(), Error> {
-        todo!()
+    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+        let mut workers = self.workers.lock().await;
+        let res = workers.set_drain_worker(worker_id, is_draining);
+        self.tasks_or_workers_change_notify.notify_one();
+        res
     }
 }
 
@@ -373,13 +376,11 @@ impl ActionScheduler for SchedulerInstance {
 
     /// Cleans up the cache of recently completed actions.
     async fn clean_recently_completed_actions(&self) {
-        todo!()
+        self.inner.clean_recently_completed_actions();
     }
 
     /// Register the metrics for the action scheduler.
     fn register_metrics(self: Arc<Self>, _registry: &mut Registry) {
-
-        todo!()
     }
 }
 
@@ -423,12 +424,12 @@ impl WorkerScheduler for SchedulerInstance {
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
     async fn remove_timedout_workers(&self, now_timestamp: WorkerTimestamp) -> Result<(), Error> {
-        todo!()
+        self.inner.remove_timedout_workers(now_timestamp).await
     }
 
     /// Sets if the worker is draining or not.
-    async fn set_drain_worker(&self, _worker_id: WorkerId, _is_draining: bool) -> Result<(), Error> {
-        todo!()
+    async fn set_drain_worker(&self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+        self.inner.set_drain_worker(worker_id, is_draining).await
     }
 
     /// Similar to `update_action()`, but called when there was an error that is not

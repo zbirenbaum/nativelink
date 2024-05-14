@@ -123,16 +123,17 @@ impl ActionSchedulerStateStore for RedisAdapter {
                 tokio::select! {
                     msg = stream.next() => {
                         println!("got message");
+
                         let state: ActionState = msg.unwrap().get_payload().unwrap();
+                        let finished = state.stage.is_finished();
                         let value = Arc::new(state);
-                        println!("sending");
-                        println!("recv count {:?}", tx.receiver_count());
-                        println!("{:?}", value);
                         if tx.send(value).is_err() {
                             println!("Error sending value");
-                            return
+                            return;
                         }
-                        println!("sent");
+                        if finished {
+                            return;
+                        }
                     }
                     _  = &mut closed_fut => {
                         println!("Future closed");
@@ -248,7 +249,9 @@ impl ActionSchedulerStateStore for RedisAdapter {
         &self,
         actions: &[OperationId]
     ) -> Result<Vec<(OperationId, ActionInfo)>, Error> {
+        if actions.is_empty() { return Ok(Vec::new()) }
         let mut con = self.get_multiplex_connection().await?;
+        println!("{:?}", actions);
         let infos: Vec<ActionInfo> = con.hget(ActionFields::Info, actions).await?;
         // clone here so that we aren't dealing with lifetime issues for POC
         Ok(std::iter::zip(actions.to_owned(), infos).collect())

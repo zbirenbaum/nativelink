@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
-use std::sync::Arc;
+use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use hashbrown::HashMap;
 use parking_lot::{Mutex, MutexGuard};
 
@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use crate::platform_property_manager::{self, PlatformPropertyManager};
 use crate::redis_adapter::RedisAdapter;
-use crate::scheduler_state::{ActionSchedulerStateStore };
+use crate::scheduler_state::{ActionSchedulerStateStore};
 use tracing::error;
 use lru::LruCache;
 /// Engine used to manage the queued/running tasks and relationship with
@@ -53,6 +53,13 @@ impl StateManager {
         self.inner.add_or_merge_action(&action_info)
             .await
             .map_err(|e| {Error { code: Code::Internal, messages: vec![e.to_string()]}})
+    }
+
+    pub async fn clean_recently_completed_actions(
+        &self,
+        _retain_completed_for_s: u64,
+    ) {
+        println!("Should be cleaning");
     }
 
     /// Updates the status of an action to the scheduler from the worker.

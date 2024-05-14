@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage};
+use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerTimestamp, WorkerId};
 use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::worker::{Worker, WorkerId, WorkerTimestamp};
+use crate::worker::Worker;
 
 /// WorkerScheduler interface is responsible for interactions between the scheduler
 /// and worker related operations.
@@ -57,7 +57,7 @@ pub trait WorkerScheduler: Sync + Send + Unpin {
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
-    async fn remove_worker(&self, worker_id: WorkerId);
+    async fn remove_worker(&self, worker_id: &WorkerId);
 
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.

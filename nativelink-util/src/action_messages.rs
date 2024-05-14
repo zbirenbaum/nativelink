@@ -14,12 +14,10 @@
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-
 use blake3::Hasher as Blake3Hasher;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -33,6 +31,10 @@ use nativelink_proto::google::rpc::Status;
 use prost::bytes::Bytes;
 use prost::Message;
 use prost_types::Any;
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
@@ -42,12 +44,74 @@ use crate::platform_properties::PlatformProperties;
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
+pub type WorkerTimestamp = u64;
+/// Unique id of worker.
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
+pub struct Id { id: u128 }
+
+pub type OperationId = Id;
+pub type WorkerId = Id;
+
+impl Id {
+    pub fn new() -> Self {
+        Self { id: uuid::Uuid::new_v4().as_u128() }
+    }
+}
+
+impl Default for OperationId {
+    fn default() -> Self { Self::new() }
+}
+
+impl TryFrom<&str> for OperationId {
+    type Error = Error;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to OperationId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
+        }
+    }
+}
+
+impl std::fmt::Display for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let operation_id_str = Uuid::from_u128(self.id).hyphenated().encode_lower(&mut buf);
+        write!(f, "{operation_id_str}")
+    }
+}
+
+impl std::fmt::Debug for OperationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let operation_id_str = Uuid::from_u128(self.id).hyphenated().encode_lower(&mut buf);
+        f.write_str(operation_id_str)
+    }
+}
+
+impl TryFrom<String> for OperationId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(&s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to OperationId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
+        }
+    }
+}
+
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
@@ -112,18 +176,59 @@ impl TryFrom<&str> for ActionInfoHashKey {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue, PartialEq)]
+pub struct ActionName(String);
+
+impl ActionName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+// Make a string encoded to hex that can be used to go back and forth
+// from ActionInfoHashKey
+impl From<&ActionInfoHashKey> for ActionName {
+    fn from(unique_qualifier: &ActionInfoHashKey) -> Self {
+        Self(hex::encode(unique_qualifier.action_name()))
+    }
+}
+
+// Make a string encoded to hex that can be used to go back and forth
+// from ActionInfoHashKey
+impl From<&ActionInfo> for ActionName {
+    fn from(action_info: &ActionInfo) -> Self {
+        Self::from(&action_info.unique_qualifier)
+    }
+}
+impl TryFrom<&ActionName> for ActionInfoHashKey {
+    type Error = Error;
+    fn try_from(action_name: &ActionName) -> Result<ActionInfoHashKey, Error> {
+        let name = action_name.0.clone();
+        let decoded = hex::decode(name)?;
+        let string_value = String::from_utf8(decoded)
+            .map_err(|_| make_input_err!("Error creating string from utf8"))?;
+        ActionInfoHashKey::try_from(string_value.as_str())
+    }
+}
+
+impl std::fmt::Display for ActionName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 /// Information needed to execute an action. This struct is used over bazel's proto `Action`
 /// for simplicity and offers a `salt`, which is useful to ensure during hashing (for dicts)
 /// to ensure we never match against another `ActionInfo` (when a task should never be cached).
 /// This struct must be 100% compatible with `ExecuteRequest` struct in `remote_execution.proto`
 /// except for the salt field.
-#[derive(Clone, Debug)]
+#[serde_with::serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct ActionInfo {
     /// Digest of the underlying `Command`.
     pub command_digest: DigestInfo,
     /// Digest of the underlying `Directory`.
     pub input_root_digest: DigestInfo,
     /// Timeout of the action.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
     pub timeout: Duration,
     /// The properties rules that must be applied when finding a worker that can run this action.
     pub platform_properties: PlatformProperties,
@@ -292,7 +397,7 @@ impl Eq for ActionInfoHashKey {}
 /// This is in order to be able to reuse the same struct instead of building different
 /// structs when converting `FileInfo` -> {`OutputFile`, `FileNode`} and other similar
 /// structs.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub enum NameOrPath {
     Name(String),
     Path(String),
@@ -321,7 +426,7 @@ impl Ord for NameOrPath {
 /// Represents an individual file and associated metadata.
 /// This struct must be 100% compatible with `OutputFile` and `FileNode` structs
 /// in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct FileInfo {
     pub name_or_path: NameOrPath,
     pub digest: DigestInfo,
@@ -376,7 +481,7 @@ impl From<FileInfo> for OutputFile {
 
 /// Represents an individual symlink file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct SymlinkInfo {
     pub name_or_path: NameOrPath,
     pub target: String,
@@ -434,7 +539,7 @@ impl From<SymlinkInfo> for OutputSymlink {
 
 /// Represents an individual directory file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct DirectoryInfo {
     pub path: String,
     pub tree_digest: DigestInfo,
@@ -466,7 +571,7 @@ impl From<DirectoryInfo> for OutputDirectory {
 
 /// Represents the metadata associated with the execution result.
 /// This struct must be 100% compatible with `ExecutedActionMetadata`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ExecutionMetadata {
     pub worker: String,
     pub queued_timestamp: SystemTime,
@@ -585,7 +690,7 @@ pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
 /// Represents the results of an execution.
 /// This struct must be 100% compatible with `ActionResult` in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ActionResult {
     pub output_files: Vec<FileInfo>,
     pub output_folders: Vec<DirectoryInfo>,
@@ -628,12 +733,11 @@ impl Default for ActionResult {
         }
     }
 }
-
 // TODO(allada) Remove the need for clippy argument by making the ActionResult and ProtoActionResult
 // a Box.
 /// The execution status/stage. This should match `ExecutionStage::Value` in `remote_execution.proto`.
-#[derive(PartialEq, Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub enum ActionStage {
     /// Stage is unknown.
     Unknown,
@@ -648,6 +752,7 @@ pub enum ActionStage {
     /// Worker completed the work with result.
     Completed(ActionResult),
     /// Result was found from cache, don't decode the proto just to re-encode it.
+    #[serde(skip)]
     CompletedFromCache(ProtoActionResult),
 }
 
@@ -659,6 +764,16 @@ impl ActionStage {
         }
     }
 
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::CacheCheck => "CacheCheck",
+            Self::Queued => "Queued",
+            Self::Executing => "Executing",
+            Self::Completed(_) => "Completed",
+            Self::CompletedFromCache(_) => "CompletedFromCache",
+        }
+    }
     /// Returns true if the worker considers the action done and no longer needs to be tracked.
     // Note: This function is separate from `has_action_result()` to not mix the concept of
     //       "finished" with "has a result".
@@ -993,40 +1108,33 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        let unique_qualifier = if let Ok(v) = operation.name.as_str().try_into() {
-            v
-        } else {
-            // This branch might happen in a case where we are forwarding an operation from
-            // one remote execution system to another that does not use our operation name
-            // format (ie: very unlikely, but possible).
-            let mut hasher = DefaultHasher::new();
-            operation.name.hash(&mut hasher);
-            ActionInfoHashKey {
-                instance_name: "UNKNOWN_INSTANCE_NAME_INOPERATION_CONVERSION".to_string(),
-                digest: action_digest,
-                salt: hasher.finish(),
-            }
-        };
+        let operation_id: OperationId = operation
+            .name
+            .as_str()
+            .try_into()?;
 
         Ok(Self {
-            unique_qualifier,
+            operation_id,
             stage,
+            action_digest
         })
     }
 }
 
+pub type ActionStateMessage = Option<Arc<ActionState>>;
 /// Current state of the action.
 /// This must be 100% compatible with `Operation` in `google/longrunning/operations.proto`.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
 pub struct ActionState {
     pub stage: ActionStage,
-    pub unique_qualifier: ActionInfoHashKey,
+    pub operation_id: OperationId,
+    pub action_digest: DigestInfo
 }
 
 impl ActionState {
     #[inline]
     pub fn action_digest(&self) -> &DigestInfo {
-        &self.unique_qualifier.digest
+        &self.action_digest
     }
 }
 
@@ -1049,7 +1157,7 @@ impl From<ActionState> for Operation {
 
         let metadata = ExecuteOperationMetadata {
             stage,
-            action_digest: Some((&val.unique_qualifier.digest).into()),
+            action_digest: Some((val.action_digest).into()),
             // TODO(blaise.bruer) We should support stderr/stdout streaming.
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
@@ -1057,7 +1165,7 @@ impl From<ActionState> for Operation {
         };
 
         Self {
-            name: val.unique_qualifier.action_name(),
+            name: val.operation_id.to_string(),
             metadata: Some(to_any(&metadata)),
             done: result.is_some(),
             result,

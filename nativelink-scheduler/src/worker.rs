@@ -12,59 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::collections::HashSet;
+use tracing::{event, warn, Level};
+use nativelink_error::error_if;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use lru::LruCache;
 
+use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     update_for_worker, ConnectionResult, StartExecute, UpdateForWorker,
 };
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_util::action_messages::{ActionInfo, Id};
 use nativelink_util::metrics_utils::{
     CollectorState, CounterWithTime, FuncCounterWrapper, MetricsComponent,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
-
+pub type WorkerId = Id;
 pub type WorkerTimestamp = u64;
-
-/// Unique id of worker.
-#[derive(Eq, PartialEq, Hash, Copy, Clone)]
-pub struct WorkerId(pub u128);
-
-impl std::fmt::Display for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
-        write!(f, "{worker_id_str}")
-    }
-}
-
-impl std::fmt::Debug for WorkerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = Uuid::encode_buffer();
-        let worker_id_str = Uuid::from_u128(self.0).hyphenated().encode_lower(&mut buf);
-        f.write_str(worker_id_str)
-    }
-}
-
-impl TryFrom<String> for WorkerId {
-    type Error = Error;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        match Uuid::parse_str(&s) {
-            Err(e) => Err(make_input_err!(
-                "Failed to convert string to WorkerId : {} : {:?}",
-                s,
-                e
-            )),
-            Ok(my_uuid) => Ok(WorkerId(my_uuid.as_u128())),
-        }
-    }
-}
-
 /// Notifications to send worker about a requested state change.
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action.
@@ -366,6 +338,158 @@ impl MetricsComponent for Worker {
                     );
                 }
             };
+        }
+    }
+}
+
+pub struct Workers {
+    pub workers: LruCache<WorkerId, Worker>,
+    /// The allocation strategy for workers.
+    pub allocation_strategy: WorkerAllocationStrategy,
+}
+
+impl Workers {
+    pub fn new(allocation_strategy: WorkerAllocationStrategy) -> Self {
+        Self {
+            workers: LruCache::unbounded(),
+            allocation_strategy,
+        }
+    }
+
+
+    /// Removes timed out workers from the pool. This is called periodically by an
+    /// external source.
+    pub fn remove_timedout_workers(&mut self, now_timestamp: WorkerTimestamp, worker_timeout_s: u64) -> Result<(), Error> {
+        let worker_ids_to_remove: Vec<WorkerId> = self
+            .workers
+            .iter()
+            .rev()
+            .map_while(|(worker_id, worker)| {
+                if worker.last_update_timestamp <= now_timestamp - worker_timeout_s {
+                    Some(*worker_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for worker_id in &worker_ids_to_remove {
+            let err = make_err!(
+                Code::Internal,
+                "Worker {worker_id} timed out, removing from pool"
+            );
+            warn!("{:?}", err);
+            self.immediate_evict_worker(worker_id, err);
+        }
+
+        Ok(())
+    }
+    /// Evicts the worker from the pool and puts items back into the queue if anything was being executed on it.
+    pub fn immediate_evict_worker(&mut self, worker_id: &WorkerId, err: Error) {
+        if let Some(mut worker) = self.remove_worker(worker_id) {
+            // We don't care if we fail to send message to worker, this is only a best attempt.
+            println!("notifying");
+            let _ = worker.notify_update(WorkerUpdate::Disconnect);
+            // We create a temporary Vec to avoid doubt about a possible code
+            // path touching the worker.running_action_infos elsewhere.
+            for action_info in worker.running_action_infos.drain() {
+                self.retry_action(&action_info, worker_id, err.clone());
+            }
+        }
+    }
+
+    pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+        todo!()
+    }
+
+    /// Sets if the worker is draining or not.
+    pub fn set_drain_worker(&mut self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+        let worker = self
+            .workers
+            .get_mut(&worker_id)
+            .err_tip(|| format!("Worker {worker_id} doesn't exist in the pool"))?;
+        worker.is_draining = is_draining;
+        Ok(())
+    }
+
+    /// Refreshes the lifetime of the worker with the given timestamp.
+    pub fn refresh_lifetime(
+        &mut self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        let worker = self.workers.get_mut(worker_id).ok_or_else(|| {
+            make_input_err!(
+                "Worker not found in worker map in refresh_lifetime() {}",
+                worker_id
+            )
+        })?;
+        error_if!(
+            worker.last_update_timestamp > timestamp,
+            "Worker already had a timestamp of {}, but tried to update it with {}",
+            worker.last_update_timestamp,
+            timestamp
+        );
+        worker.last_update_timestamp = timestamp;
+        Ok(())
+    }
+
+    /// Adds a worker to the pool.
+    /// Note: This function will not do any task matching.
+    pub fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
+        let worker_id = worker.id;
+        self.workers.put(worker_id, worker);
+
+        // Worker is not cloneable, and we do not want to send the initial connection results until
+        // we have added it to the map, or we might get some strange race conditions due to the way
+        // the multi-threaded runtime works.
+        let worker = self.workers.peek_mut(&worker_id).unwrap();
+        let res = worker
+            .send_initial_connection_result()
+            .err_tip(|| "Failed to send initial connection result to worker");
+        if let Err(err) = &res {
+            event!(
+                Level::ERROR,
+                ?worker_id,
+                ?err,
+                "Worker connection appears to have been closed while adding to pool"
+            );
+        }
+        res
+    }
+
+    /// Removes worker from pool.
+    /// Note: The caller is responsible for any rescheduling of any tasks that might be
+    /// running.
+    pub fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        self.workers.pop(worker_id)
+    }
+
+    /// Attempts to find a worker that is capable of running this action.
+    // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
+    // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
+    // simulation of worst cases in a single threaded environment.
+    pub fn find_worker_with_properties_mut<'a>(
+        &'a mut self,
+        action_platform_properties: &PlatformProperties,
+    ) -> Option<&'a mut Worker> {
+        let action_properties = action_platform_properties;
+        let mut workers_iter = self.workers.iter_mut();
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+        };
+        let worker_id = workers_iter.map(|(_, w)| &w.id);
+        // We need to "touch" the worker to ensure it gets re-ordered in the LRUCache, since it was selected.
+        if let Some(&worker_id) = worker_id {
+            self.workers.get_mut(&worker_id)
+        } else {
+            None
         }
     }
 }

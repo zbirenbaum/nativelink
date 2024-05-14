@@ -13,5 +13,9 @@ nativelink-proto = { path = "../nativelink-proto" }
 hex = "0.4.3"
 prost = "0.12.4"
 prost-types = "0.12.4"
+redis = { version = "0.25.2", features = ["aio", "connection-manager", "tokio-comp", "cluster", "cluster-async", "keep-alive"] }
+redis-macros = "0.3.0"
 tokio = { version = "1.37.0" }
 tonic = { version = "0.11.0", features = ["gzip"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

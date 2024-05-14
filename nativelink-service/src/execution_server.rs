@@ -80,7 +80,7 @@ impl InstanceInfo {
             .timeout
             .clone()
             .map(|v| Duration::new(v.seconds as u64, v.nanos as u32))
-            .unwrap_or(Duration::MAX);
+            .unwrap_or(Duration::from_secs(600));
 
         let mut platform_properties = HashMap::new();
         if let Some(platform) = &action.platform {
@@ -132,7 +132,7 @@ impl InstanceInfo {
                     0
                 },
             },
-            skip_cache_lookup,
+            skip_cache_lookup: true,
             digest_function,
         })
     }

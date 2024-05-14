@@ -37,7 +37,8 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
-      "simple": {
+      "distributed": {
+        "db_url": "redis://127.0.0.1/",
         "supported_platform_properties": {
           "cpu_count": "minimum",
           "memory_kb": "minimum",

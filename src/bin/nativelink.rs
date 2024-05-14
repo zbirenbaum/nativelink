@@ -32,6 +32,7 @@ use nativelink_config::cas_server::{
 use nativelink_config::stores::ConfigDigestHashFunction;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_scheduler::state_manager::StateManager;
 use nativelink_scheduler::worker::WorkerId;
 use nativelink_service::ac_server::AcServer;
 use nativelink_service::bytestream_server::ByteStreamServer;

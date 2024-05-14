@@ -24,6 +24,10 @@ prost = "0.12.4"
 prost-types = "0.12.4"
 rand = "0.8.5"
 serde = { version = "1.0.201", features = ["derive"] }
+redis = "0.25.3"
+redis-macros = "0.3.0"
+serde_json = "1.0.116"
+serde_with = "3.7.0"
 sha2 = "0.10.8"
 tokio = { version = "1.37.0", features = [ "sync", "fs", "rt", "time", "io-util", "macros" ] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
@@ -31,6 +35,7 @@ tokio-util = { version = "0.7.11" }
 tonic = { version = "0.11.0", features = ["tls"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

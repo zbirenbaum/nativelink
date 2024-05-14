@@ -13,25 +13,29 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-
-use serde::Deserialize;
-
 use crate::serde_utils::convert_numeric_with_shellexpand;
-use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
+use crate::stores::StoreRefName;
+
+use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::{Serialize, Deserialize};
+
+// use crate::serde_utils::convert_numeric_with_shellexpand;
+use crate::stores::{GrpcEndpoint, Retry};
 
 #[allow(non_camel_case_types)]
 #[derive(Deserialize, Debug)]
 pub enum SchedulerConfig {
-    simple(SimpleScheduler),
+    // simple(SimpleScheduler),
+    distributed(SchedulerInstance),
     grpc(GrpcScheduler),
-    cache_lookup(CacheLookupScheduler),
+    // cache_lookup(CacheLookupScheduler),
     property_modifier(PropertyModifierScheduler),
 }
 
 /// When the scheduler matches tasks to workers that are capable of running
 /// the task, this value will be used to determine how the property is treated.
 #[allow(non_camel_case_types)]
-#[derive(Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq, ToRedisArgs, FromRedisValue)]
 pub enum PropertyType {
     /// Requires the platform property to be a u64 and when the scheduler looks
     /// for appropriate worker nodes that are capable of executing the task,
@@ -67,60 +71,79 @@ pub enum WorkerAllocationStrategy {
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SimpleScheduler {
-    /// A list of supported platform properties mapped to how these properties
-    /// are used when the scheduler looks for worker nodes capable of running
-    /// the task.
-    ///
-    /// For example, a value of:
-    /// ```json
-    /// { "cpu_count": "minimum", "cpu_arch": "exact" }
-    /// ```
-    /// With a job that contains:
-    /// ```json
-    /// { "cpu_count": "8", "cpu_arch": "arm" }
-    /// ```
-    /// Will result in the scheduler filtering out any workers that do not have
-    /// "cpu_arch" = "arm" and filter out any workers that have less than 8 cpu
-    /// cores available.
-    ///
-    /// The property names here must match the property keys provided by the
-    /// worker nodes when they join the pool. In other words, the workers will
-    /// publish their capabilities to the scheduler when they join the worker
-    /// pool. If the worker fails to notify the scheduler of it's (for example)
-    /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
-    /// have the "cpu_arch" label. There is no special treatment of any platform
-    /// property labels other and entirely driven by worker configs and this
-    /// config.
+pub struct SchedulerInstance {
+    pub db_url: String,
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
-    /// The amount of time to retain completed actions in memory for in case
-    /// a WaitExecution is called after the action has completed.
-    /// Default: 60 (seconds)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub retain_completed_for_s: u64,
 
-    /// Remove workers from pool once the worker has not responded in this
-    /// amount of time in seconds.
-    /// Default: 5 (seconds)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub worker_timeout_s: u64,
 
-    /// If a job returns an internal error or times out this many times when
-    /// attempting to run on a worker the scheduler will return the last error
-    /// to the client. Jobs will be retried and this configuration is to help
-    /// prevent one rogue job from infinitely retrying and taking up a lot of
-    /// resources when the task itself is the one causing the server to go
-    /// into a bad state.
-    /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
 
-    /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
 }
 
+// #[derive(Deserialize, Debug, Default)]
+// #[serde(deny_unknown_fields)]
+// pub struct SimpleScheduler {
+//     /// A list of supported platform properties mapped to how these properties
+//     /// are used when the scheduler looks for worker nodes capable of running
+//     /// the task.
+//     ///
+//     /// For example, a value of:
+//     /// ```json
+//     /// { "cpu_count": "minimum", "cpu_arch": "exact" }
+//     /// ```
+//     /// With a job that contains:
+//     /// ```json
+//     /// { "cpu_count": "8", "cpu_arch": "arm" }
+//     /// ```
+//     /// Will result in the scheduler filtering out any workers that do not have
+//     /// "cpu_arch" = "arm" and filter out any workers that have less than 8 cpu
+//     /// cores available.
+//     ///
+//     /// The property names here must match the property keys provided by the
+//     /// worker nodes when they join the pool. In other words, the workers will
+//     /// publish their capabilities to the scheduler when they join the worker
+//     /// pool. If the worker fails to notify the scheduler of it's (for example)
+//     /// "cpu_arch", the scheduler will never send any jobs to it, if all jobs
+//     /// have the "cpu_arch" label. There is no special treatment of any platform
+//     /// property labels other and entirely driven by worker configs and this
+//     /// config.
+//     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
+//
+//     /// The amount of time to retain completed actions in memory for in case
+//     /// a WaitExecution is called after the action has completed.
+//     /// Default: 60 (seconds)
+//     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+//     pub retain_completed_for_s: u64,
+//
+//     /// Remove workers from pool once the worker has not responded in this
+//     /// amount of time in seconds.
+//     /// Default: 5 (seconds)
+//     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+//     pub worker_timeout_s: u64,
+//
+//     /// If a job returns an internal error or times out this many times when
+//     /// attempting to run on a worker the scheduler will return the last error
+//     /// to the client. Jobs will be retried and this configuration is to help
+//     /// prevent one rogue job from infinitely retrying and taking up a lot of
+//     /// resources when the task itself is the one causing the server to go
+//     /// into a bad state.
+//     /// Default: 3
+//     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+//     pub max_job_retries: usize,
+//
+//     /// The strategy used to assign workers jobs.
+//     #[serde(default)]
+//     pub allocation_strategy: WorkerAllocationStrategy,
+// }
+//
 /// A scheduler that simply forwards requests to an upstream scheduler.  This
 /// is useful to use when doing some kind of local action cache or CAS away from
 /// the main cluster of workers.  In general, it's more efficient to point the
@@ -147,18 +170,34 @@ pub struct GrpcScheduler {
     pub connections_per_endpoint: usize,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct CacheLookupScheduler {
-    /// The reference to the action cache store used to return cached
-    /// actions from rather than running them again.
-    /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
-    pub ac_store: StoreRefName,
+// #[derive(Deserialize, Debug)]
+// #[serde(deny_unknown_fields)]
+// pub struct CacheLookupScheduler {
+//     /// The reference to the action cache store used to return cached
+//     /// actions from rather than running them again.
+//     /// To prevent unintended issues, this store should probably be a CompletenessCheckingStore.
+//     pub ac_store: StoreRefName,
+//
+//     /// The nested scheduler to use if cache lookup fails.
+//     pub scheduler: Box<SchedulerConfig>,
+// }
 
-    /// The nested scheduler to use if cache lookup fails.
-    pub scheduler: Box<SchedulerConfig>,
-}
-
+// #[derive(Deserialize, Debug)]
+// #[serde(deny_unknown_fields)]
+// pub struct CacheLookupScheduler {
+//     /// The reference to the action cache store to use to returned cached
+//     /// actions from rather than running them again.
+//     pub ac_store: StoreRefName,
+//
+//     /// The reference to the CAS which contains the outputs from the cached
+//     /// actions to verify that the outputs still exist before returning a
+//     /// cached result.
+//     pub cas_store: StoreRefName,
+//
+//     /// The nested scheduler to use if cache lookup fails.
+//     pub scheduler: Box<SchedulerConfig>,
+// }
+//
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformPropertyAddition {

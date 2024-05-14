@@ -12,26 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-
 use nativelink_config::schedulers::PropertyType;
 use nativelink_error::{make_input_err, Code, Error, ResultExt};
 use nativelink_util::platform_properties::PlatformPropertyValue;
 
 /// Helps manage known properties and conversion into `PlatformPropertyValue`.
 pub struct PlatformPropertyManager {
-    known_properties: HashMap<String, PropertyType>,
+    known_properties: std::collections::HashMap<String, PropertyType>,
 }
 
 impl PlatformPropertyManager {
     #[must_use]
-    pub const fn new(known_properties: HashMap<String, PropertyType>) -> Self {
+    pub const fn new(known_properties: std::collections::HashMap<String, PropertyType>) -> Self {
         Self { known_properties }
     }
 
     /// Returns the `known_properties` map.
     #[must_use]
-    pub const fn get_known_properties(&self) -> &HashMap<String, PropertyType> {
+    pub const fn get_known_properties(&self) -> &std::collections::HashMap<String, PropertyType> {
         &self.known_properties
     }
 

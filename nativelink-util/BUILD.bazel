@@ -59,6 +59,7 @@ rust_library(
         "@crates//:tokio-util",
         "@crates//:tonic",
         "@crates//:tracing",
+        "@crates//:uuid",
     ],
 )
 

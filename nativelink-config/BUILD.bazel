@@ -16,7 +16,10 @@ rust_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@crates//:redis",
+        "@crates//:redis-macros",
         "@crates//:serde",
+        "@crates//:serde_json",
         "@crates//:shellexpand",
     ],
 )

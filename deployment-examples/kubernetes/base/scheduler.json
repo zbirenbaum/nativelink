@@ -22,9 +22,9 @@
     }
   },
   "schedulers": {
-    "MAIN_SCHEDULER": {
+    "${SCHEDULER_NAME}": {
       "distributed": {
-	"db_url": "redis://redis-stack",
+        "db_url": "redis://redis-stack",
         "supported_platform_properties": {
           "cpu_count": "priority",
           "memory_kb": "priority",
@@ -61,13 +61,13 @@
       "execution": {
         "main": {
           "cas_store": "GRPC_LOCAL_STORE",
-          "scheduler": "MAIN_SCHEDULER",
+          "scheduler": "${SCHEDULER_NAME}",
         }
       },
       "capabilities": {
         "main": {
           "remote_execution": {
-            "scheduler": "MAIN_SCHEDULER",
+            "scheduler": "${SCHEDULER_NAME}",
           }
         }
       }
@@ -85,7 +85,7 @@
       // In other words, this service is a backend api. The ones above
       // are a frontend api.
       "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
+        "scheduler": "${SCHEDULER_NAME}",
       },
       "health": {},
     }

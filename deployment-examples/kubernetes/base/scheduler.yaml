@@ -2,9 +2,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nativelink-scheduler
+  name: nativelink-scheduler-1
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: nativelink-scheduler
@@ -22,6 +22,45 @@ spec:
               value: info
             - name: CAS_ENDPOINT
               value: nativelink-cas
+            - name: SCHEDULER_NAME
+              value: SCHEDULER_1
+          ports:
+            - containerPort: 50052
+          volumeMounts:
+            - name: scheduler-config
+              mountPath: /scheduler.json
+              subPath: scheduler.json
+          args: ["/scheduler.json"]
+      volumes:
+        - name: scheduler-config
+          configMap:
+            name: scheduler
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nativelink-scheduler-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nativelink-scheduler
+  template:
+    metadata:
+      labels:
+        app: nativelink-scheduler
+    spec:
+      containers:
+        - name: nativelink-scheduler
+          # This image will be edited by kustomize.
+          image: nativelink
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: CAS_ENDPOINT
+              value: nativelink-cas
+            - name: SCHEDULER_NAME
+              value: SCHEDULER_2
           ports:
             - containerPort: 50052
           volumeMounts:

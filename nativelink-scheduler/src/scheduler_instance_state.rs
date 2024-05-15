@@ -1,4 +1,3 @@
-
 // Copyright 2023 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,31 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
-use std::sync::Arc;
-use std::time::Duration;
-use parking_lot::MutexGuard;
-use futures::Future;
-use parking_lot::Mutex;
 use async_trait::async_trait;
-use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionStage, ActionState, Id, OperationId, WorkerId, WorkerTimestamp};
+use futures::Future;
+use nativelink_util::action_messages::{
+    ActionInfo, ActionInfoHashKey, ActionStage, ActionState, Id, OperationId, WorkerId,
+    WorkerTimestamp,
+};
 use nativelink_util::metrics_utils::Registry;
 use nativelink_util::platform_properties::PlatformProperties;
+use parking_lot::Mutex;
+use parking_lot::MutexGuard;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::action_scheduler::ActionScheduler;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::state_manager::StateManager;
 // use crate::state_manager::StateManager;
-use crate::worker::{Worker, Workers, WorkerUpdate};
+use crate::worker::{Worker, WorkerUpdate, Workers};
 use crate::worker_scheduler::WorkerScheduler;
-use tracing::warn;
-use nativelink_error::{error_if, make_err, make_input_err, Error, ResultExt, Code};
-use nativelink_config::schedulers::WorkerAllocationStrategy;
 use lru::LruCache;
-use tracing::error;
+use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-
+use tracing::error;
+use tracing::warn;
 
 /// Default timeout for workers in seconds.
 /// If this changes, remember to change the documentation in the config.
@@ -66,10 +67,7 @@ impl SchedulerInstanceState {
         let lock = self.workers.lock();
         lock
     }
-    pub async fn do_try_match(&self) {
-
-
-    }
+    pub async fn do_try_match(&self) {}
 
     fn immediate_evict_worker(&self, worker_id: &WorkerId, err: Error) {
         let mut workers = self.workers.lock();
@@ -78,7 +76,6 @@ impl SchedulerInstanceState {
         self.tasks_or_workers_change_notify.notify_one();
     }
 }
-
 
 #[async_trait]
 impl ActionScheduler for SchedulerInstanceState {
@@ -101,7 +98,9 @@ impl ActionScheduler for SchedulerInstanceState {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        self.state_manager.find_existing_action(unique_qualifier).await
+        self.state_manager
+            .find_existing_action(unique_qualifier)
+            .await
     }
 
     /// Cleans up the cache of recently completed actions.
@@ -114,7 +113,6 @@ impl ActionScheduler for SchedulerInstanceState {
         todo!()
     }
 }
-
 
 // #[async_trait]
 // impl WorkerScheduler for SchedulerInstanceState {

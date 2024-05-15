@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nativelink_config::schedulers::{PropertyModification, PropertyType};
 use nativelink_error::{Error, ResultExt};
-use nativelink_util::action_messages::{OperationId, ActionInfo, ActionState, ActionInfoHashKey};
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState, OperationId};
 use parking_lot::Mutex;
 use tokio::sync::watch;
 

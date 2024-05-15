@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use crate::serde_utils::convert_numeric_with_shellexpand;
 use crate::stores::StoreRefName;
+use std::collections::HashMap;
 
 use redis_macros::{FromRedisValue, ToRedisArgs};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // use crate::serde_utils::convert_numeric_with_shellexpand;
 use crate::stores::{GrpcEndpoint, Retry};
@@ -35,7 +35,9 @@ pub enum SchedulerConfig {
 /// When the scheduler matches tasks to workers that are capable of running
 /// the task, this value will be used to determine how the property is treated.
 #[allow(non_camel_case_types)]
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq, ToRedisArgs, FromRedisValue)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, Hash, Eq, PartialEq, ToRedisArgs, FromRedisValue,
+)]
 pub enum PropertyType {
     /// Requires the platform property to be a u64 and when the scheduler looks
     /// for appropriate worker nodes that are capable of executing the task,

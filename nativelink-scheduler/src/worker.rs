@@ -13,13 +13,13 @@
 // limitations under the License.
 
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
-use std::collections::HashSet;
-use tracing::{event, warn, Level};
+use lru::LruCache;
 use nativelink_error::error_if;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use lru::LruCache;
+use tracing::{event, warn, Level};
 
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{make_err, make_input_err, Code, Error, ResultExt};
@@ -356,10 +356,13 @@ impl Workers {
         }
     }
 
-
     /// Removes timed out workers from the pool. This is called periodically by an
     /// external source.
-    pub fn remove_timedout_workers(&mut self, now_timestamp: WorkerTimestamp, worker_timeout_s: u64) -> Result<(), Error> {
+    pub fn remove_timedout_workers(
+        &mut self,
+        now_timestamp: WorkerTimestamp,
+        worker_timeout_s: u64,
+    ) -> Result<(), Error> {
         let worker_ids_to_remove: Vec<WorkerId> = self
             .workers
             .iter()
@@ -397,12 +400,21 @@ impl Workers {
         }
     }
 
-    pub async fn retry_action(&self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
+    pub async fn retry_action(
+        &self,
+        action_info: &Arc<ActionInfo>,
+        worker_id: &WorkerId,
+        err: Error,
+    ) {
         todo!()
     }
 
     /// Sets if the worker is draining or not.
-    pub fn set_drain_worker(&mut self, worker_id: WorkerId, is_draining: bool) -> Result<(), Error> {
+    pub fn set_drain_worker(
+        &mut self,
+        worker_id: WorkerId,
+        is_draining: bool,
+    ) -> Result<(), Error> {
         let worker = self
             .workers
             .get_mut(&worker_id)

@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use blake3::Hasher as Blake3Hasher;
 use nativelink_error::{error_if, make_input_err, Error, ResultExt};
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -34,6 +28,12 @@ use prost_types::Any;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::borrow::Borrow;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
@@ -47,19 +47,25 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 pub type WorkerTimestamp = u64;
 /// Unique id of worker.
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
-pub struct Id { id: u128 }
+pub struct Id {
+    id: u128,
+}
 
 pub type OperationId = Id;
 pub type WorkerId = Id;
 
 impl Id {
     pub fn new() -> Self {
-        Self { id: uuid::Uuid::new_v4().as_u128() }
+        Self {
+            id: uuid::Uuid::new_v4().as_u128(),
+        }
     }
 }
 
 impl Default for OperationId {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TryFrom<&str> for OperationId {
@@ -71,7 +77,9 @@ impl TryFrom<&str> for OperationId {
                 s,
                 e
             )),
-            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
+            Ok(my_uuid) => Ok(OperationId {
+                id: my_uuid.as_u128(),
+            }),
         }
     }
 }
@@ -101,7 +109,9 @@ impl TryFrom<String> for OperationId {
                 s,
                 e
             )),
-            Ok(my_uuid) => Ok(OperationId { id: my_uuid.as_u128() }),
+            Ok(my_uuid) => Ok(OperationId {
+                id: my_uuid.as_u128(),
+            }),
         }
     }
 }
@@ -1108,15 +1118,12 @@ impl TryFrom<Operation> for ActionState {
             }
         };
 
-        let operation_id: OperationId = operation
-            .name
-            .as_str()
-            .try_into()?;
+        let operation_id: OperationId = operation.name.as_str().try_into()?;
 
         Ok(Self {
             operation_id,
             stage,
-            action_digest
+            action_digest,
         })
     }
 }
@@ -1128,7 +1135,7 @@ pub type ActionStateMessage = Option<Arc<ActionState>>;
 pub struct ActionState {
     pub stage: ActionStage,
     pub operation_id: OperationId,
-    pub action_digest: DigestInfo
+    pub action_digest: DigestInfo,
 }
 
 impl ActionState {

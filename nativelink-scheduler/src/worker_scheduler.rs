@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_error::Error;
-use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerTimestamp, WorkerId};
+use nativelink_util::action_messages::{ActionInfoHashKey, ActionStage, WorkerId, WorkerTimestamp};
 use nativelink_util::metrics_utils::Registry;
 
 use crate::platform_property_manager::PlatformPropertyManager;

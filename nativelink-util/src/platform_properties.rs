@@ -78,7 +78,19 @@ impl From<ProtoPlatform> for PlatformProperties {
 ///            TODO(allada) In the future this will be used by the scheduler and
 ///            worker to cause the scheduler to prefer certain workers over others,
 ///            but not restrict them based on these values.
-#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
+#[derive(
+    Eq,
+    PartialEq,
+    Hash,
+    Clone,
+    Ord,
+    PartialOrd,
+    Debug,
+    Serialize,
+    Deserialize,
+    ToRedisArgs,
+    FromRedisValue,
+)]
 pub enum PlatformPropertyValue {
     Exact(String),
     Minimum(u64),

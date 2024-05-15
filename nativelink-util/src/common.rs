@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::fs;
 
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, ToRedisArgs, FromRedisValue)]
+#[derive(
+    Serialize, Deserialize, Default, Clone, Copy, Eq, PartialEq, Hash, ToRedisArgs, FromRedisValue,
+)]
 #[repr(C)]
 pub struct DigestInfo {
     /// Raw hash in packed form.

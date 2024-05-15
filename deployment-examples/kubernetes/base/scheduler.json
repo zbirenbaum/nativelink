@@ -23,9 +23,8 @@
   },
   "schedulers": {
     "MAIN_SCHEDULER": {
-      // TODO(adams): use the right scheduler because reclient doesn't use the cached results?
-      // TODO(adams): max_bytes_per_stream
-      "simple": {
+      "distributed": {
+	"db_url": "redis://redis-stack",
         "supported_platform_properties": {
           "cpu_count": "priority",
           "memory_kb": "priority",
@@ -42,7 +41,7 @@
           "cpu_model": "priority",
           "kernel_version": "priority",
           "OSFamily": "priority",
-          "container-image": "priority",
+          "container-image": "priority"
         }
       }
     }

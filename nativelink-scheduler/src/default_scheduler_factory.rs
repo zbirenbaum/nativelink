@@ -28,8 +28,8 @@ use crate::action_scheduler::ActionScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
 // use crate::simple_scheduler::SimpleScheduler;
-use crate::worker_scheduler::WorkerScheduler;
 use crate::distributed_scheduler::SchedulerInstance;
+use crate::worker_scheduler::WorkerScheduler;
 
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn ActionScheduler>>,
@@ -58,7 +58,6 @@ fn inner_scheduler_factory(
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match scheduler_type_cfg {
         SchedulerConfig::distributed(config) => {
-
             let scheduler = Arc::new(SchedulerInstance::new(config));
             (Some(scheduler.clone()), Some(scheduler))
         }
@@ -96,9 +95,13 @@ fn inner_scheduler_factory(
         //     (Some(cache_lookup_scheduler), worker_scheduler)
         // }
         SchedulerConfig::property_modifier(config) => {
-            let (action_scheduler, worker_scheduler) =
-                inner_scheduler_factory(&config.scheduler, _store_manager, None, visited_schedulers)
-                    .err_tip(|| "In nested PropertyModifierScheduler construction")?;
+            let (action_scheduler, worker_scheduler) = inner_scheduler_factory(
+                &config.scheduler,
+                _store_manager,
+                None,
+                visited_schedulers,
+            )
+            .err_tip(|| "In nested PropertyModifierScheduler construction")?;
             let property_modifier_scheduler = Arc::new(PropertyModifierScheduler::new(
                 config,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,

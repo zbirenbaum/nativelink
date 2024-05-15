@@ -1,4 +1,3 @@
-
 // Copyright 2023 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,11 +20,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::{Future, FutureExt, StreamExt};
-use redis::{AsyncCommands, Client};
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, ActionState};
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
+use redis::{AsyncCommands, Client};
 mod utils {
     pub(crate) mod scheduler_utils;
 }
@@ -35,9 +34,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_scheduler::distributed_scheduler::SchedulerInstance;
 use nativelink_scheduler::redis_adapter::RedisAdapter;
+use nativelink_scheduler::scheduler_state::ActionSchedulerStateStore;
 use nativelink_scheduler::worker::{Worker, WorkerId, WorkerTimestamp};
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_scheduler::scheduler_state::ActionSchedulerStateStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use tokio::sync::{mpsc, watch};
@@ -89,7 +88,13 @@ async fn setup_action(
     action_digest: DigestInfo,
     platform_properties: PlatformProperties,
     insert_timestamp: SystemTime,
-) -> Result<(watch::Receiver<Arc<ActionState>>, tokio::task::JoinHandle<()>), Error> {
+) -> Result<
+    (
+        watch::Receiver<Arc<ActionState>>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Error,
+> {
     let mut action_info = make_base_action_info(insert_timestamp);
     action_info.platform_properties = platform_properties;
     action_info.unique_qualifier.digest = action_digest;
@@ -109,8 +114,10 @@ mod scheduler_tests {
     use nativelink_scheduler::redis_adapter;
     use nativelink_util::action_messages::ActionStage;
     use pretty_assertions::assert_eq;
-    use redis::{cmd, streams::{StreamRangeReply, StreamReadOptions, StreamReadReply}};
-    use tokio::{sync::Notify, time::sleep};
+    use redis::cmd;
+    use redis::streams::{StreamRangeReply, StreamReadOptions, StreamReadReply};
+    use tokio::sync::Notify;
+    use tokio::time::sleep;
 
     use super::*; // Must be declared in every module.
 

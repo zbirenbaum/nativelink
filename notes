@@ -1,0 +1,15 @@
+Execution request:
+    sends instance name
+
+Standard kub setup
+    pod for each container
+    in kub have a service
+    service is static domain/ip for all the pods in the service
+
+
+
+                      - Scheduler_A - ------------- Worker
+                    /                 \
+Client - Service - |                   | - Redis Service
+                    \                 /
+                      - Scheduler_B -

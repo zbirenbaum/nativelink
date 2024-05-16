@@ -44,11 +44,12 @@ rust_binary(
 genrule(
     name = "dummy_test_sh",
     outs = ["dummy_test.sh"],
-    cmd = "echo \"sleep .1;   echo $$(printf '=%.0s' {1..100})\" > \"$@\"",
+    cmd = "echo \"sleep $$(( RANDOM % 15 ))\" > \"$@\"",
 )
 
-sh_test(
-    name = "dummy_test",
+[sh_test(
+    name = "dummy_test_{}".format(i),
     timeout = "short",
     srcs = [":dummy_test_sh"],
-)
+    tags = ["demo"],
+) for i in range(1, 1000)]

@@ -69,11 +69,15 @@ pub trait ActionSchedulerStateStore: Sync + Send + Unpin {
         unique_qualifier: &ActionInfoHashKey,
     ) -> Result<OperationId, Error>;
 
-    async fn set_action_assignment(
+    async fn assign_actions(
         &self,
-        operation_id: OperationId,
-        assigned: bool,
+        actions: &[OperationId]
     ) -> Result<(), Error>;
+
+    async fn requeue_expired_actions(
+        &self,
+        timeout_duration_s: u64
+    ) -> Result<usize, Error>;
 
     async fn update_action_stages(
         &self,

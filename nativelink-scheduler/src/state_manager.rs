@@ -134,8 +134,11 @@ impl StateManager {
     ) -> Result<Vec<(OperationId, ActionInfo)>, Error> {
         self.inner.get_action_info_for_actions(ids).await
     }
-    pub async fn remove_actions_from_queue(&self, ids: &[OperationId]) -> Result<(), Error> {
-        self.inner.remove_actions_from_queue(ids).await
+    pub async fn assign_actions(&self, ids: &[OperationId]) -> Result<(), Error> {
+        self.inner.assign_actions(ids).await
+    }
+    pub async fn requeue_expired_actions(&self, timeout_s: u64) -> Result<usize, Error> {
+        self.inner.requeue_expired_actions(timeout_s).await
     }
 
     pub async fn update_action_stages(

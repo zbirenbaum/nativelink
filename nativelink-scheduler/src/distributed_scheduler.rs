@@ -71,6 +71,14 @@ impl SchedulerInstanceState {
         // to iterate the items in reverse it becomes more difficult (and it is currently an
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
         println!("Matching");
+        match self.state_manager.requeue_expired_actions(self.worker_timeout_s).await {
+            Ok(n_actions) => {
+                println!("Requeued {} actions", n_actions);
+            },
+            Err(e) => {
+                println!("Requeue failed with err: {}", e.messages.concat())
+            }
+        }
         let queued_actions_res: Result<Vec<OperationId>, Error> =
             self.state_manager.get_queued_actions().await;
         let mut worker_lock = self.workers.lock().await;
@@ -118,16 +126,18 @@ impl SchedulerInstanceState {
             }
 
             // At this point everything looks good, so remove it from the queue and add it to active actions.
-            self.state_manager
-                .remove_actions_from_queue(&[operation_id])
+            let res = self.state_manager
+                .assign_actions(&[operation_id])
                 .await;
-            self.state_manager
-                .update_action(
-                    &worker_id,
-                    &action_info.unique_qualifier,
-                    ActionStage::Executing,
-                )
-                .await;
+            if res.is_ok() {
+                let _ = self.state_manager
+                    .update_action(
+                        &worker_id,
+                        &action_info.unique_qualifier,
+                        ActionStage::Executing,
+                    )
+                    .await;
+            }
 
             // awaited_action.attempts += 1;
         }

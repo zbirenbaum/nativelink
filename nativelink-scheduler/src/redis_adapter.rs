@@ -1,6 +1,7 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::scheduler_state::{ActionFields, ActionMaps, ActionSchedulerStateStore};
 use crate::worker::WorkerUpdate;
@@ -58,7 +59,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut con = self.get_connection()?;
         // let mut con = &self.().await?;
         let (attempts,): (u64,) = redis::transaction(&mut con, &[key.clone()], |con, pipe| {
-            let old_val: isize = con.hget(&key, &operation_id)?;
+            let old_val: isize = con.hget(&key, operation_id)?;
             pipe.set(&key, old_val - 1).ignore().get(&key).query(con)
         })?;
         Ok(attempts)
@@ -69,26 +70,51 @@ impl ActionSchedulerStateStore for RedisAdapter {
         let mut con = self.get_connection()?;
         // let mut con = &self.().await?;
         let (attempts,): (u64,) = redis::transaction(&mut con, &[key.clone()], |con, pipe| {
-            let old_val: isize = con.hget(&key, &operation_id)?;
+            let old_val: isize = con.hget(&key, operation_id)?;
             pipe.set(&key, old_val + 1).ignore().get(&key).query(con)
         })?;
         Ok(attempts)
     }
 
-    async fn set_action_assignment(
+    async fn assign_actions(
         &self,
-        _operation_id: OperationId,
-        _assigned: bool,
+        actions: &[OperationId]
     ) -> Result<(), Error> {
+        let mut pipe: Pipeline = Pipeline::new();
+        let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         let mut con = self.get_multiplex_connection().await?;
-        // let fut = {
-        //     if assigned {
-        //         return con.hset(ActionStage, operation_id, ActionStage::Executing)
-        //     else {
-        //         return con.hdel(ActionStage, operation_id, ActionStage::Queued)
-        //     }
-        // }
+        let actions_with_timestamps: Vec<(&OperationId, u64)> = actions.iter().map(|id| {(id, now)}).collect();
+        pipe
+            .hset_multiple(ActionMaps::Assigned, &actions_with_timestamps).ignore()
+            .zrem(ActionMaps::Queued, actions).ignore()
+            .query_async(&mut con)
+            .await?;
+        con.zrem(ActionMaps::Queued, actions).await?;
         Ok(())
+    }
+
+    async fn requeue_expired_actions(
+        &self,
+        timeout_s: u64
+    ) -> Result<usize, Error> {
+        let mut con = self.get_connection()?;
+        let actions_with_timestamps: Vec<(OperationId, u64)> = con.hgetall(ActionMaps::Assigned)?;
+        println!("{:?}",actions_with_timestamps);
+        let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let expired: Vec<&OperationId> = actions_with_timestamps.iter().filter_map(|(id, t)| {
+            if now - t >= timeout_s {
+                return Some(id)
+            }
+            None
+        }).collect();
+        if expired.is_empty() { return Ok(0) }
+        let expired_action_infos: Vec<ActionInfo> = con.hget(ActionFields::Info, &expired)?;
+        let priorities: Vec<i32> = expired_action_infos.iter().map(|info| info.priority).collect();
+        let actions_with_priority: Vec<(i32, &OperationId)> = std::iter::zip(priorities, expired.clone()).collect();
+        println!("{:?}",actions_with_priority);
+        con.hdel(ActionMaps::Assigned, &expired)?;
+        con.zadd_multiple(ActionMaps::Queued, &actions_with_priority)?;
+        Ok(expired.len())
     }
 
     async fn subscribe<'a>(
@@ -159,8 +185,18 @@ impl ActionSchedulerStateStore for RedisAdapter {
         // Currently not removing from queued when assigned and set to executing
         let mut con = self.get_multiplex_connection().await?;
         let mut pipe = Pipeline::new();
+        let completed_actions: Vec<&OperationId> = operations.iter().filter_map(|(id, stage)| {
+            if let ActionStage::Completed(res) = stage {
+                if res.error.is_none() { return Some(id) }
+            }
+            None
+        }).collect();
         pipe.atomic()
-            .hset_multiple(ActionFields::Stage, operations)
+            .hset_multiple(ActionFields::Stage, operations);
+        if !completed_actions.is_empty() {
+            pipe.hdel(ActionMaps::Assigned, &completed_actions);
+        }
+        pipe
             .query_async(&mut con)
             .await?;
         for (id, _) in operations.iter() {
@@ -197,9 +233,7 @@ impl ActionSchedulerStateStore for RedisAdapter {
             action_digest,
         };
         let var = id.to_string();
-        println!("{:?}", var);
-        let res = con.publish(var, action_state).await?;
-        println!("Published inner: {:?}", res);
+        let _ = con.publish(var, action_state).await?;
         Ok(())
     }
 

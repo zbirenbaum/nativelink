@@ -2,7 +2,7 @@ term 1:
 ulimit -n 65000 && cargo run --bin nativelink -- scheduler_worker.json
 
 term 2:
-ulimit -n 65000 && cargo run --bin nativelink -- only_scheduler.json
+ulimit -n 65001 && cargo run --bin nativelink -- only_scheduler.json
 
 term 3:
 cargo run --bin nativelink -- cas.json

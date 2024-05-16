@@ -44,7 +44,7 @@ rust_binary(
 genrule(
     name = "dummy_test_sh",
     outs = ["dummy_test.sh"],
-    cmd = "echo \"sleep $$(( RANDOM % 15 ))\" > \"$@\"",
+    cmd = "echo \"sleep $$(( RANDOM % 4 ))\" > \"$@\"",
 )
 
 [sh_test(

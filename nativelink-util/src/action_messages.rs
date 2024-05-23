@@ -32,6 +32,7 @@ use nativelink_proto::google::rpc::Status;
 use prost::bytes::Bytes;
 use prost::Message;
 use prost_types::Any;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::common::{DigestInfo, HashMapExt, VecExt};
@@ -44,7 +45,7 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
 pub type WorkerTimestamp = u64;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Id {
     pub unique_qualifier: ActionInfoHashKey,
     pub id: Uuid,
@@ -110,7 +111,7 @@ impl std::fmt::Debug for Id {
 /// Since the hashing only needs the digest and salt we can just alias them here
 /// and point the original `ActionInfo` structs to reference these structs for
 /// it's hashing functions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionInfoHashKey {
     /// Name of instance group this action belongs to.
     pub instance_name: String,
@@ -355,7 +356,7 @@ impl Eq for ActionInfoHashKey {}
 /// This is in order to be able to reuse the same struct instead of building different
 /// structs when converting `FileInfo` -> {`OutputFile`, `FileNode`} and other similar
 /// structs.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum NameOrPath {
     Name(String),
     Path(String),
@@ -384,7 +385,7 @@ impl Ord for NameOrPath {
 /// Represents an individual file and associated metadata.
 /// This struct must be 100% compatible with `OutputFile` and `FileNode` structs
 /// in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name_or_path: NameOrPath,
     pub digest: DigestInfo,
@@ -439,7 +440,7 @@ impl From<FileInfo> for OutputFile {
 
 /// Represents an individual symlink file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SymlinkInfo {
     pub name_or_path: NameOrPath,
     pub target: String,
@@ -497,7 +498,7 @@ impl From<SymlinkInfo> for OutputSymlink {
 
 /// Represents an individual directory file and associated metadata.
 /// This struct must be 100% compatible with `SymlinkNode` and `OutputSymlink`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryInfo {
     pub path: String,
     pub tree_digest: DigestInfo,
@@ -529,7 +530,7 @@ impl From<DirectoryInfo> for OutputDirectory {
 
 /// Represents the metadata associated with the execution result.
 /// This struct must be 100% compatible with `ExecutedActionMetadata`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionMetadata {
     pub worker: String,
     pub queued_timestamp: SystemTime,
@@ -648,7 +649,7 @@ pub const INTERNAL_ERROR_EXIT_CODE: i32 = -178;
 
 /// Represents the results of an execution.
 /// This struct must be 100% compatible with `ActionResult` in `remote_execution.proto`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ActionResult {
     pub output_files: Vec<FileInfo>,
     pub output_folders: Vec<DirectoryInfo>,

@@ -697,6 +697,9 @@ name = "bitflags"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "blake3"
@@ -897,6 +900,12 @@ checksum = "53fe5e26ff1b7aef8bca9c6080520cfb8d9333c7568e1829cef191a9723e5504"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
 
 [[package]]
 name = "crc32c"
@@ -1755,6 +1764,7 @@ dependencies = [
  "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
+ "nativelink-state",
  "nativelink-store",
  "nativelink-util",
  "nativelink-worker",
@@ -1786,6 +1796,8 @@ dependencies = [
  "nativelink-proto",
  "prost",
  "prost-types",
+ "redis",
+ "serde",
  "tokio",
  "tonic 0.11.0",
 ]
@@ -1864,6 +1876,41 @@ dependencies = [
  "tokio-stream",
  "tonic 0.11.0",
  "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "nativelink-state"
+version = "0.3.0"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "bitflags 2.5.0",
+ "blake3",
+ "futures",
+ "hashbrown 0.14.5",
+ "hex",
+ "itertools",
+ "lru",
+ "nativelink-config",
+ "nativelink-error",
+ "nativelink-macro",
+ "nativelink-proto",
+ "nativelink-store",
+ "nativelink-util",
+ "parking_lot",
+ "pretty_assertions",
+ "prost",
+ "rand",
+ "redis",
+ "redis-macros",
+ "scopeguard",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.11.0",
  "tracing",
  "uuid",
 ]
@@ -2417,11 +2464,14 @@ dependencies = [
  "async-trait",
  "bytes",
  "combine",
+ "crc16",
  "futures",
  "futures-util",
  "itoa",
+ "log",
  "percent-encoding",
  "pin-project-lite",
+ "rand",
  "rustls 0.22.4",
  "rustls-native-certs 0.7.0",
  "rustls-pemfile 2.1.2",
@@ -2434,6 +2484,29 @@ dependencies = [
  "tokio-rustls 0.25.0",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "redis-macros"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b5407866b6626d251b18c878f043d37f43124680f26a806595a61714ab049a"
+dependencies = [
+ "redis",
+ "redis-macros-derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "redis-macros-derive"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dfe1dc77e38e260bbd53e98d3aec64add3cdf5d773e38d344c63660196117f5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.52",
 ]
 
 [[package]]

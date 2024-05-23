@@ -133,6 +133,12 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl From<redis::RedisError> for Error {
+    fn from(err: redis::RedisError) -> Self {
+        make_err!(Code::Internal, "{}", err.to_string())
+    }
+}
+
 impl From<prost::DecodeError> for Error {
     fn from(err: prost::DecodeError) -> Self {
         make_err!(Code::Internal, "{}", err.to_string())

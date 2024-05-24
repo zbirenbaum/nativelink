@@ -14,8 +14,10 @@
 
 use std::borrow::Borrow;
 use std::cmp;
+use std::collections::btree_map::Keys;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::iter::{Cloned, Map, Rev};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -150,6 +152,28 @@ impl Workers {
         self.workers.pop(worker_id)
     }
 
+    fn find_worker_for_action(
+        &self,
+        awaited_action: &AwaitedAction,
+    ) -> Option<WorkerId> {
+        assert!(matches!(
+            awaited_action.current_state.stage,
+            ActionStage::Queued
+        ));
+        let action_properties = &awaited_action.action_info.platform_properties;
+        let mut workers_iter = self.workers.iter();
+        let workers_iter = match self.allocation_strategy {
+            // Use rfind to get the least recently used that satisfies the properties.
+            WorkerAllocationStrategy::least_recently_used => workers_iter.rfind(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+            // Use find to get the most recently used that satisfies the properties.
+            WorkerAllocationStrategy::most_recently_used => workers_iter.find(|(_, w)| {
+                w.can_accept_work() && action_properties.is_satisfied_by(&w.platform_properties)
+            }),
+        };
+        workers_iter.map(|(_, w)| &w.id).copied()
+    }
     /// Attempts to find a worker that is capable of running this action.
     // TODO(blaise.bruer) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
@@ -377,44 +401,46 @@ impl SimpleSchedulerImpl {
         &self,
         unique_qualifier: &ActionInfoHashKey,
     ) -> Option<watch::Receiver<Arc<ActionState>>> {
-        let filter_result: Result<
-            Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>,
-            Error,
-        > = <SchedulerStateManager as ClientStateManager>::filter_operations(
-            &self.scheduler_state_manager,
-            OperationFilter {
-                stages: OperationStageFlags::Any,
-                operation_id: None,
-                worker_id: None,
-                action_digest: None,
-                worker_update_before: None,
-                completed_before: None,
-                last_client_update_before: None,
-                unique_qualifier: unique_qualifier.clone(),
-            },
-        )
-        .await;
-
-        let mut filter_result_opt = match filter_result {
-            Ok(stream) => stream,
-            Err(_e) => {
-                // TODO(adams): trace error message
-                return None;
-            }
-        };
-
-        if let Some(result) = filter_result_opt.next().await {
-            // result.as_receiver().await.ok().cloned()
-            match result.as_receiver().await {
-                Ok(receiver) => Some(receiver).cloned(),
-                Err(_e) => {
-                    // TODO(adams): trace error message
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        todo!()
+        // let filter_result: Result<
+        //     Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>,
+        //     Error,
+        // > = <SchedulerStateManager as ClientStateManager>::filter_operations(
+        //     &self.scheduler_state_manager,
+        //     OperationFilter {
+        //         stages: OperationStageFlags::Any,
+        //         operation_id: None,
+        //         worker_id: None,
+        //         action_digest: None,
+        //         worker_update_before: None,
+        //         completed_before: None,
+        //         last_client_update_before: None,
+        //         unique_qualifier: Some(unique_qualifier.clone()),
+        //         order_by: None
+        //     },
+        // )
+        // .await;
+        //
+        // let mut filter_result_opt = match filter_result {
+        //     Ok(stream) => stream,
+        //     Err(_e) => {
+        //         // TODO(adams): trace error message
+        //         return None;
+        //     }
+        // };
+        //
+        // if let Some(result) = filter_result_opt.next().await {
+        //     // result.as_receiver().await.ok().cloned()
+        //     match result.as_receiver().await {
+        //         Ok(receiver) => Some(receiver).cloned(),
+        //         Err(_e) => {
+        //             // TODO(adams): trace error message
+        //             None
+        //         }
+        //     }
+        // } else {
+        //     None
+        // }
     }
 
     fn retry_action(&mut self, action_info: &Arc<ActionInfo>, worker_id: &WorkerId, err: Error) {
@@ -517,24 +543,36 @@ impl SimpleSchedulerImpl {
         self.tasks_or_workers_change_notify.notify_one();
         Ok(())
     }
+    fn get_action_state_results(&self) -> Vec<Box<dyn ActionStateResult>> {
+        <SchedulerStateManager as MatchingEngineStateManager>::filter_operations(
+            &self.scheduler_state_manager,
+            OperationFilter {
+                stages: OperationStageFlags::Queued,
+                operation_id: None,
+                worker_id: None,
+                action_digest: None,
+                worker_update_before: None,
+                completed_before: None,
+                last_client_update_before: None,
+                unique_qualifier: None,
+                order_by: None,
+            },
+        )
+    }
 
     // TODO(blaise.bruer) This is an O(n*m) (aka n^2) algorithm. In theory we can create a map
     // of capabilities of each worker and then try and match the actions to the worker using
     // the map lookup (ie. map reduce).
-    fn do_try_match(&mut self) {
+    async fn do_try_match(&mut self) {
         // TODO(blaise.bruer) This is a bit difficult because of how rust's borrow checker gets in
         // the way. We need to conditionally remove items from the `queued_action`. Rust is working
         // to add `drain_filter`, which would in theory solve this problem, but because we need
         // to iterate the items in reverse it becomes more difficult (and it is currently an
         // unstable feature [see: https://github.com/rust-lang/rust/issues/70530]).
-        let action_infos: Vec<Arc<ActionInfo>> = self
-            .scheduler_state_manager
-            .queued_actions
-            .keys()
-            .rev()
-            .cloned()
-            .collect();
-        for action_info in action_infos {
+        let action_state_results = self.get_action_state_results();
+        for action_state_result in action_state_results.iter() {
+            let action_info = action_state_result.as_action_info().await.unwrap();
+            let action_info = Arc::new((*action_info).clone());
             let Some(awaited_action) = self
                 .scheduler_state_manager
                 .queued_actions
@@ -547,40 +585,47 @@ impl SimpleSchedulerImpl {
                 );
                 continue;
             };
-            let Some(worker) = self
-                .scheduler_state_manager
-                .workers
-                .find_worker_for_action_mut(awaited_action)
-            else {
+            // TODO(adams): What happens when we have two concurrent OperationsId
+            //  how do we rejoin those actions to a single action.
+            let maybe_worker_id = {
+                self
+                    .scheduler_state_manager
+                    .workers
+                    .find_worker_for_action(awaited_action)
+            };
+            let Some(worker_id) = maybe_worker_id else {
                 // No worker found, check the next action to see if there's a
                 // matching one for that.
                 continue;
             };
-            let worker_id = worker.id;
 
             // Try to notify our worker of the new action to run, if it fails remove the worker from the
             // pool and try to find another worker.
-            let notify_worker_result =
-                worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
-            if notify_worker_result.is_err() {
-                // Remove worker, as it is no longer receiving messages and let it try to find another worker.
-                event!(
-                    Level::WARN,
-                    ?worker_id,
-                    ?action_info,
-                    ?notify_worker_result,
-                    "Worker command failed, removing worker",
-                );
-                self.immediate_evict_worker(
-                    &worker_id,
-                    make_err!(
-                        Code::Internal,
-                        "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
-                    ),
-                );
-                return;
-            }
+            {
+                let worker = self.scheduler_state_manager.workers.workers.get_mut(&worker_id).unwrap();
+                let notify_worker_result = worker.notify_update(WorkerUpdate::RunAction(action_info.clone()));
+                if notify_worker_result.is_err() {
+                    // Remove worker, as it is no longer receiving messages and let it try to find another worker.
+                    event!(
+                        Level::WARN,
+                        ?worker_id,
+                        ?action_info,
+                        ?notify_worker_result,
+                        "Worker command failed, removing worker",
+                    );
+                    self.immediate_evict_worker(
+                                &worker_id,
+                                make_err!(
+                            Code::Internal,
+                            "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
+                        ),
+                            );
+                    return;
+                }
+            };
 
+
+            // TODO(adams): This is update_operation for changing state to ActionStage::Execution
             // At this point everything looks good, so remove it from the queue and add it to active actions.
             let (action_info, mut awaited_action) = self
                 .scheduler_state_manager
@@ -762,6 +807,34 @@ impl ActionStateResult for ClientActionStateResult {
     async fn as_receiver(&self) -> Result<&'_ Receiver<Arc<ActionState>>, Error> {
         Ok(&self.rx)
     }
+
+    async fn as_action_info(&self) -> Result<&ActionInfo, Error> {
+        unimplemented!()
+    }
+}
+
+pub struct MatchingEngineActionStateResult {
+    pub action_info: ActionInfo,
+}
+impl MatchingEngineActionStateResult {
+    fn new(action_info: ActionInfo) -> Self {
+        Self { action_info }
+    }
+}
+
+#[async_trait]
+impl ActionStateResult for MatchingEngineActionStateResult {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        unimplemented!()
+    }
+
+    async fn as_receiver(&self) -> Result<&'_ Receiver<Arc<ActionState>>, Error> {
+        unimplemented!()
+    }
+
+    async fn as_action_info(&self) -> Result<&ActionInfo, Error> {
+        Ok(&self.action_info)
+    }
 }
 
 #[async_trait]
@@ -834,28 +907,29 @@ impl ClientStateManager for SchedulerStateManager {
     async fn filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>, Error> {
+    ) -> Vec<Box<dyn ActionStateResult>> {
+        todo!()
         // TODO(adams): Use operation stage flags to determine which
-        let unique_qualifier = &filter.unique_qualifier;
-
-        let awaited_action: Option<&AwaitedAction> = self
-            .queued_actions_set
-            .get(unique_qualifier)
-            .and_then(|action_info| self.queued_actions.get(action_info))
-            .or_else(|| self.active_actions.get(unique_qualifier));
-
-        let client_action_state_result: Pin<Box<Iter<IntoIter<Arc<dyn ActionStateResult>>>>> =
-            Box::pin(
-                awaited_action
-                    .map(|aa| {
-                        let rx = aa.notify_channel.subscribe();
-                        let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
-                        v.push(Arc::new(ClientActionStateResult::new(rx)));
-                        stream::iter(v)
-                    })
-                    .unwrap_or_else(|| stream::iter(Vec::new())),
-            );
-        Ok(client_action_state_result)
+    //     let unique_qualifier = &filter.unique_qualifier.unwrap();
+    //
+    //     let awaited_action: Option<&AwaitedAction> = self
+    //         .queued_actions_set
+    //         .get(&unique_qualifier.clone())
+    //         .and_then(|action_info| self.queued_actions.get(action_info))
+    //         .or_else(|| self.active_actions.get(unique_qualifier));
+    //
+    //     let client_action_state_result: Pin<Box<Iter<IntoIter<Arc<dyn ActionStateResult>>>>> =
+    //         Box::pin(
+    //             awaited_action
+    //                 .map(|aa| {
+    //                     let rx = aa.notify_channel.subscribe();
+    //                     let mut v: Vec<Arc<dyn ActionStateResult>> = Vec::new();
+    //                     v.push(Arc::new(ClientActionStateResult::new(rx)));
+    //                     stream::iter(v)
+    //                 })
+    //                 .unwrap_or_else(|| stream::iter(Vec::new())),
+    //         );
+    //     Ok(client_action_state_result)
     }
 }
 
@@ -960,9 +1034,18 @@ impl WorkerStateManager for SchedulerStateManager {
 impl MatchingEngineStateManager for SchedulerStateManager {
     fn filter_operations(
         &self,
-        filter: OperationFilter,
-    ) -> Result<Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>, Error> {
+        filter: OperationFilter
+    ) -> Vec<Box<dyn ActionStateResult>> {
         todo!()
+        // TODO(adams): use OperationFilter vs directly encoding it.
+        // self
+        //     .queued_actions
+        //     .values()
+        //     .rev()
+        //     .map(|a| {
+        //         let action_info = a.action_info.as_ref();
+        //         MatchingEngineActionStateResult::new(action_info.clone().into())
+        //     }).collect()
     }
 
     async fn update_operation(

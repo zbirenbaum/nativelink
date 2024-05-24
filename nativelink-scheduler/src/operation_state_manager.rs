@@ -38,9 +38,33 @@ bitflags! {
     }
 }
 
+pub struct MatchingEngineActionStateResult {
+    pub action_info: ActionInfo,
+}
+impl MatchingEngineActionStateResult {
+    fn new(action_info: ActionInfo) -> Self {
+        Self { action_info }
+    }
+}
+
+#[async_trait]
+impl ActionStateResult for MatchingEngineActionStateResult {
+    async fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+        unimplemented!()
+    }
+
+    async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error> {
+        unimplemented!()
+    }
+
+    async fn as_action_info(&self) -> Result<&ActionInfo, Error> {
+        Ok(&self.action_info)
+    }
+}
 #[async_trait]
 pub trait ActionStateResult: Send + Sync + 'static {
     async fn as_state(&self) -> Result<Arc<ActionState>, Error>;
+    async fn as_action_info(&self) -> Result<&ActionInfo, Error>;
     async fn as_receiver(&self) -> Result<&'_ watch::Receiver<Arc<ActionState>>, Error>;
 }
 
@@ -78,9 +102,22 @@ pub struct OperationFilter {
     /// The operation must have it's last client update before this time.
     pub last_client_update_before: Option<SystemTime>,
 
-    pub unique_qualifier: ActionInfoHashKey,
+    pub unique_qualifier: Option<ActionInfoHashKey>,
+
+    pub order_by: Option<OrderBy>
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OperationFields {
+    Priority,
+    Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OrderBy {
+    pub fields: Vec<OperationFields>,
+    pub desc: bool
+}
 #[async_trait]
 pub trait ClientStateManager {
     /// Add a new action to the queue or joins an existing action.
@@ -90,7 +127,7 @@ pub trait ClientStateManager {
     async fn filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>, Error>;
+    ) -> Vec<Box<dyn ActionStateResult>>;
 }
 
 
@@ -114,7 +151,7 @@ pub trait MatchingEngineStateManager {
     fn filter_operations(
         &self,
         filter: OperationFilter,
-    ) -> Result<Pin<Box<dyn Stream<Item = Arc<dyn ActionStateResult>> + Send>>, Error>;
+    ) -> Vec<Box<dyn ActionStateResult>>;
 
     /// Update that state of an operation.
     async fn update_operation(

@@ -1,15 +1,17 @@
 use std::sync::Arc;
+use std::time::SystemTime;
 use tonic::async_trait;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use futures::{Stream, StreamExt};
 use nativelink_util::action_messages::{ActionResult, ActionStage, ActionState, Id};
 use redis::aio::{MultiplexedConnection, PubSub};
-use redis::{ Client, Connection };
+use redis::{Client, Connection, Pipeline, ToRedisArgs};
 use nativelink_error::Error;
 use tokio::sync::watch;
 use serde::{Serialize, Deserialize};
 
-use crate::operation_state_manager::{ActionStateResult, MatchingEngineStateManager, OperationFilter, OperationStageFlags};
+use crate::type_wrappers::{OperationStageFlags, RedisDigestHasherFunc, RedisActionInfo, RedisPlatformProperties, RedisPlatformPropertyValue};
+use crate::operation_state_manager::{ActionStateResult, MatchingEngineStateManager, OperationFilter};
 
 pub struct RedisActionState {
     client: Client,
@@ -82,11 +84,12 @@ impl RedisActionState {
     }
 }
 
-impl RedisActionState {
-    pub fn as_state(&self) -> Result<Arc<ActionState>, Error> {
+#[async_trait]
+impl ActionStateResult for RedisActionState {
+    fn as_state(&self) -> Result<Arc<ActionState>, Error> {
         Ok(Arc::new(self.inner.clone().try_into()?))
     }
-    pub async fn as_receiver<'a>(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
+    async fn as_receiver(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error> {
         self.subscribe(&self.client).await
     }
 }
@@ -123,9 +126,11 @@ impl MatchingEngineStateManager for RedisManager {
         filter: OperationFilter,
     ) -> Box<dyn Stream<Item = dyn ActionStateResult>> {
         let mut con = self.get_multiplex_connection().await.unwrap();
+        let mut time_filter_keys: Vec<(String, SystemTime)> = Vec::new();
         todo!()
 
     }
+
 
     /// Update that state of an operation.
     async fn update_operation(

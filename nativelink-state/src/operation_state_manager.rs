@@ -13,68 +13,16 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use redis_macros::{FromRedisValue, ToRedisArgs};
 use tokio::sync::watch;
-use bitflags::bitflags;
-use nativelink_error::{make_input_err, Error};
+use nativelink_error::Error;
 use tonic::async_trait;
 use std::time::SystemTime;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::action_messages::{ActionInfo, ActionResult, ActionStage, ActionState, Id};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ActionState, Id};
 use tokio_stream::Stream;
 use serde::{Serialize, Deserialize};
+use crate::type_wrappers::OperationStageFlags;
 
-
-bitflags! {
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
-    pub struct OperationStageFlags: u32 {
-        const CacheCheck = 1 << 1;
-        const Queued     = 1 << 2;
-        const Executing  = 1 << 3;
-        const Completed  = 1 << 4;
-        const None       = 0;
-        const Any        = u32::MAX;
-    }
-}
-
-impl OperationStageFlags {
-    pub fn to_action_stage(&self, action_result: Option<ActionResult>) -> Result<ActionStage, Error> {
-        match *self {
-            OperationStageFlags::CacheCheck => Ok(ActionStage::CacheCheck),
-            OperationStageFlags::Queued => Ok(ActionStage::Queued),
-            OperationStageFlags::Executing => Ok(ActionStage::Executing),
-            OperationStageFlags::Completed => {
-                let Some(result) = action_result else {
-
-                    return Err(make_input_err!("Action stage is completed but no result was provided"))
-                };
-                Ok(ActionStage::Completed(result))
-            },
-            _ => Ok(ActionStage::Unknown),
-        }
-    }
-    pub const fn has_action_result(&self) -> bool {
-        (OperationStageFlags::Completed.bits() & self.bits()) == 0
-    }
-}
-
-impl From<ActionStage> for OperationStageFlags {
-    fn from(state: ActionStage) -> Self {
-        Self::from(&state)
-    }
-}
-impl From<&ActionStage> for OperationStageFlags {
-    fn from(state: &ActionStage) -> Self {
-        match state {
-            ActionStage::CompletedFromCache(_)
-            | ActionStage::Unknown => Self::Any,
-            ActionStage::Queued => Self::Queued,
-            ActionStage::Completed(_) => Self::Completed,
-            ActionStage::Executing => Self::Executing,
-            ActionStage::CacheCheck => Self::CacheCheck
-        }
-    }
-}
 
 #[async_trait]
 pub trait ActionStateResult {
@@ -82,76 +30,36 @@ pub trait ActionStateResult {
     async fn as_receiver(&self) -> Result<watch::Receiver<Arc<ActionState>>, Error>;
 }
 
-#[derive(Eq, PartialEq, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
-pub struct RedisOperation {
-    /// The stage(s) that the operation must be in.
-    stages: OperationStageFlags,
-    /// The operation id.
-    operation_id: Id,
-    /// The worker that the operation must be assigned to.
-    worker_id: Option<Id>,
-    /// The digest of the action that the operation must have.
-    action_digest: Option<DigestInfo>,
-    /// The operation must have it's worker timestamp before this time.
-    worker_update_before: Option<SystemTime>,
-    /// The operation must have been completed before this time.
-    completed_before: Option<SystemTime>,
-    /// The operation must have it's last client update before this time.
-    last_client_update_before: Option<SystemTime>,
+#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+pub enum RedisPlatformPropertyType {
+    Exact,
+    Minimum,
+    Priority,
+    Unknown,
 }
 
-/// The filters used to query operations from the state manager.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OperationFilter {
     /// The stage(s) that the operation must be in.
-    stages: OperationStageFlags,
+    pub stages: OperationStageFlags,
 
     /// The operation id.
-    operation_id: Option<Id>,
+    pub operation_id: Option<Id>,
 
     /// The worker that the operation must be assigned to.
-    worker_id: Option<Id>,
+    pub worker_id: Option<Id>,
 
     /// The digest of the action that the operation must have.
-    action_digest: Option<DigestInfo>,
+    pub action_digest: Option<DigestInfo>,
 
     /// The operation must have it's worker timestamp before this time.
-    worker_update_before: Option<SystemTime>,
+    pub worker_update_before: Option<SystemTime>,
 
     /// The operation must have been completed before this time.
-    completed_before: Option<SystemTime>,
+    pub completed_before: Option<SystemTime>,
 
     /// The operation must have it's last client update before this time.
-    last_client_update_before: Option<SystemTime>,
-}
-
-pub struct OperationFilterKeys {
-    /// The stage(s) that the operation must be in.
-    stages: OperationStageFlags,
-
-    /// The operation id.
-    operation_id: Option<Id>,
-
-    /// The worker that the operation must be assigned to.
-    worker_id: Option<Id>,
-
-    /// The digest of the action that the operation must have.
-    action_digest: Option<DigestInfo>,
-
-    /// The operation must have it's worker timestamp before this time.
-    worker_update_before: Option<SystemTime>,
-
-    /// The operation must have been completed before this time.
-    completed_before: Option<SystemTime>,
-
-    /// The operation must have it's last client update before this time.
-    last_client_update_before: Option<SystemTime>,
-}
-
-impl OperationFilter {
-    pub fn get_keys_for_id(&self, id: Id) {
-
-    }
+    pub last_client_update_before: Option<SystemTime>,
 }
 
 #[async_trait]

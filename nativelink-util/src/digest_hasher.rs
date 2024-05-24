@@ -84,6 +84,18 @@ impl TryFrom<ProtoDigestFunction> for DigestHasherFunc {
     }
 }
 
+impl From<String> for DigestHasherFunc {
+    fn from(value: String) -> Self {
+        if value.eq("blake3") {
+            return Self::Blake3;
+        }
+        else if value.eq("sha256") {
+            return Self::Sha256
+        }
+        default_digest_hasher_func()
+    }
+}
+
 impl TryFrom<i32> for DigestHasherFunc {
     type Error = Error;
 

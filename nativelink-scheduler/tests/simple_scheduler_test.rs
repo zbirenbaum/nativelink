@@ -22,7 +22,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_scheduler::action_scheduler::ActionScheduler;
 use nativelink_util::action_messages::{
     ActionInfoHashKey, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata,
-    FileInfo, Id, NameOrPath, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
+    FileInfo, NameOrPath, OperationId, SymlinkInfo, INTERNAL_ERROR_EXIT_CODE,
 };
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 mod utils {
@@ -255,7 +255,7 @@ mod scheduler_tests {
             salt: 0,
         };
 
-        let id = Id::new(unique_qualifier);
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state1 = ActionState {
             // Name is a random string, so we ignore it and just make it the same.
             id: id.clone(),
@@ -535,7 +535,7 @@ mod scheduler_tests {
             digest: DigestInfo::zero_digest(),
             salt: 0,
         };
-        let id = Id::new(unique_qualifier);
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
             id,
             stage: ActionStage::Queued,
@@ -695,7 +695,7 @@ mod scheduler_tests {
             digest: DigestInfo::zero_digest(),
             salt: 0,
         };
-        let id = Id::new(unique_qualifier);
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
             id,
             // Name is a random string, so we ignore it and just make it the same.
@@ -1081,7 +1081,7 @@ mod scheduler_tests {
             digest: DigestInfo::zero_digest(),
             salt: 0,
         };
-        let id = Id::new(unique_qualifier);
+        let id = OperationId::new(unique_qualifier);
         let mut expected_action_state = ActionState {
             id,
             stage: ActionStage::Executing,

@@ -27,7 +27,7 @@ use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{error_if, make_err, make_input_err, Code, Error, ResultExt};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata, Id
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata, OperationId
 };
 use nativelink_util::metrics_utils::{
     AsyncCounterWrapper, Collector, CollectorState, CounterWithTime, FuncCounterWrapper,
@@ -182,21 +182,21 @@ struct CompletedAction {
 
 impl Hash for CompletedAction {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Id::hash(&self.state.id, state);
+        OperationId::hash(&self.state.id, state);
     }
 }
 
 impl PartialEq for CompletedAction {
     fn eq(&self, other: &Self) -> bool {
-        Id::eq(&self.state.id, &other.state.id)
+        OperationId::eq(&self.state.id, &other.state.id)
     }
 }
 
 impl Eq for CompletedAction {}
 
-impl Borrow<Id> for CompletedAction {
+impl Borrow<OperationId> for CompletedAction {
     #[inline]
-    fn borrow(&self) -> &Id {
+    fn borrow(&self) -> &OperationId {
         &self.state.id
     }
 }
@@ -297,7 +297,7 @@ impl SimpleSchedulerImpl {
         self.metrics.add_action_new_action_created.inc();
         // Action needs to be added to queue or is not cacheable.
         let action_info = Arc::new(action_info);
-        let id = Id::new(action_info.unique_qualifier.clone());
+        let id = OperationId::new(action_info.unique_qualifier.clone());
 
         let current_state = Arc::new(ActionState {
             id,

@@ -3,14 +3,14 @@ use std::time::SystemTime;
 use tonic::async_trait;
 use redis_macros::{FromRedisValue, ToRedisArgs};
 use futures::{Stream, StreamExt};
-use nativelink_util::action_messages::{ActionResult, ActionStage, ActionState, Id};
+use nativelink_util::action_messages::{ActionResult, ActionStage, ActionState, OperationId, WorkerId};
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{Client, Connection, Pipeline, ToRedisArgs};
 use nativelink_error::Error;
 use tokio::sync::watch;
 use serde::{Serialize, Deserialize};
 
-use crate::type_wrappers::{OperationStageFlags, RedisDigestHasherFunc, RedisActionInfo, RedisPlatformProperties, RedisPlatformPropertyValue};
+use crate::type_wrappers::{OperationStageFlags, RedisDigestHasherFunc, RedisPlatformProperties, RedisPlatformPropertyValue};
 use crate::operation_state_manager::{ActionStateResult, MatchingEngineStateManager, OperationFilter};
 
 pub struct RedisActionState {
@@ -20,7 +20,7 @@ pub struct RedisActionState {
 
 #[derive(Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct RedisActionStateImpl {
-    id: Id,
+    id: OperationId,
     stage_flag: OperationStageFlags,
     result: Option<ActionResult>,
 }
@@ -103,6 +103,14 @@ impl RedisManager {
         Self { client: Client::open(url).unwrap() }
     }
 
+    async fn create_operation_index(&self) -> Result<(), Error> {
+        // let cmd = redis::cmd("FT.CREATE").arg("operation:")
+        // redis::cmd("FT.CREATE").arg("operation").arg("ON JSON").arg("PREFIX").arg(1).arg("operation:").arg("SCHEMA").arg("$.")
+        // FT.CREATE operationIdx ON JSON PREFIX 1 operation: SCHEMA $.stage AS stage TEXT $.last_update as last_update numeric
+        let mut con = self.get_connection()?;
+        Ok(())
+    }
+
     async fn get_async_pubsub(&self) -> Result<PubSub, Error> {
         Ok(self.client.get_async_pubsub().await?)
     }
@@ -135,8 +143,8 @@ impl MatchingEngineStateManager for RedisManager {
     /// Update that state of an operation.
     async fn update_operation(
         &self,
-        operation_id: Id,
-        worker_id: Option<Id>,
+        operation_id: OperationId,
+        worker_id: Option<WorkerId>,
         action_stage: ActionStage,
     ) -> Result<(), Error> {
         todo!()
@@ -147,7 +155,7 @@ impl MatchingEngineStateManager for RedisManager {
     /// that are no longer needed to prevent memory leaks.
     async fn remove_operation(
         &self,
-        operation_id: Id,
+        operation_id: OperationId,
     ) -> Result<(), Error> {
         todo!()
     }

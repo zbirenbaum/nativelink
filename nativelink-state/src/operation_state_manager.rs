@@ -18,7 +18,7 @@ use nativelink_error::Error;
 use tonic::async_trait;
 use std::time::SystemTime;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::action_messages::{ActionInfo, ActionStage, ActionState, Id};
+use nativelink_util::action_messages::{ActionInfo, ActionStage, ActionState, OperationId, WorkerId};
 use tokio_stream::Stream;
 use serde::{Serialize, Deserialize};
 use crate::type_wrappers::OperationStageFlags;
@@ -44,10 +44,10 @@ pub struct OperationFilter {
     pub stages: OperationStageFlags,
 
     /// The operation id.
-    pub operation_id: Option<Id>,
+    pub operation_id: Option<OperationId>,
 
     /// The worker that the operation must be assigned to.
-    pub worker_id: Option<Id>,
+    pub worker_id: Option<WorkerId>,
 
     /// The digest of the action that the operation must have.
     pub action_digest: Option<DigestInfo>,
@@ -85,8 +85,8 @@ pub trait WorkerStateManager {
     /// the operation from being considered stale and being rescheduled.
     async fn update_operation(
         &self,
-        operation_id: Id,
-        worker_id: Id,
+        operation_id: OperationId,
+        worker_id: WorkerId,
         action_stage: Result<ActionStage, Error>,
     ) -> Result<(), Error>;
 }
@@ -102,8 +102,8 @@ pub trait MatchingEngineStateManager {
     /// Update that state of an operation.
     async fn update_operation(
         &self,
-        operation_id: Id,
-        worker_id: Option<Id>,
+        operation_id: OperationId,
+        worker_id: Option<WorkerId>,
         action_stage: ActionStage,
     ) -> Result<(), Error>;
 
@@ -112,6 +112,6 @@ pub trait MatchingEngineStateManager {
     /// that are no longer needed to prevent memory leaks.
     async fn remove_operation(
         &self,
-        operation_id: Id,
+        operation_id: OperationId,
     ) -> Result<(), Error>;
 }

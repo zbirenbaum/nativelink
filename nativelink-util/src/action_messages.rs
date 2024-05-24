@@ -46,19 +46,19 @@ pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 pub type WorkerTimestamp = u64;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Id {
+pub struct OperationId {
     pub unique_qualifier: ActionInfoHashKey,
     pub id: Uuid,
 }
 
 // TODO: Eventually we should make this it's own hash rather than delegate to ActionInfoHashKey.
-impl Hash for Id {
+impl Hash for OperationId {
     fn hash<H: Hasher>(&self, state: &mut H) {
         ActionInfoHashKey::hash(&self.unique_qualifier, state)
     }
 }
 
-impl Id {
+impl OperationId {
     pub fn new(unique_qualifier: ActionInfoHashKey) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
@@ -78,7 +78,7 @@ impl Id {
     }
 }
 
-impl TryFrom<&str> for Id {
+impl TryFrom<&str> for OperationId {
     type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Error> {
@@ -92,20 +92,53 @@ impl TryFrom<&str> for Id {
     }
 }
 
-impl std::fmt::Display for Id {
+impl std::fmt::Display for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let id_str = format!("{}:{}", self.unique_qualifier.action_name(), self.id);
         write!(f, "{id_str}")
     }
 }
 
-impl std::fmt::Debug for Id {
+impl std::fmt::Debug for OperationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let id_str = format!("{}:{}", self.unique_qualifier.action_name(), self.id);
         write!(f, "{id_str}")
     }
 }
 
+/// Unique id of worker.
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
+pub struct WorkerId(pub Uuid);
+
+impl std::fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let worker_id_str = self.0.hyphenated().encode_lower(&mut buf);
+        write!(f, "{worker_id_str}")
+    }
+}
+
+impl std::fmt::Debug for WorkerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Uuid::encode_buffer();
+        let worker_id_str = self.0.hyphenated().encode_lower(&mut buf);
+        f.write_str(worker_id_str)
+    }
+}
+
+impl TryFrom<String> for WorkerId {
+    type Error = Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        match Uuid::parse_str(&s) {
+            Err(e) => Err(make_input_err!(
+                "Failed to convert string to WorkerId : {} : {:?}",
+                s,
+                e
+            )),
+            Ok(my_uuid) => Ok(WorkerId(my_uuid)),
+        }
+    }
+}
 /// This is a utility struct used to make it easier to match `ActionInfos` in a
 /// `HashMap` without needing to construct an entire `ActionInfo`.
 /// Since the hashing only needs the digest and salt we can just alias them here
@@ -1054,7 +1087,7 @@ impl TryFrom<Operation> for ActionState {
         // NOTE: This will error if we are forwarding an operation from
         // one remote execution system to another that does not use our operation name
         // format (ie: very unlikely, but possible).
-        let id = Id::try_from(operation.name.as_str())?;
+        let id = OperationId::try_from(operation.name.as_str())?;
         Ok(Self {
             id,
             stage,
@@ -1067,7 +1100,7 @@ impl TryFrom<Operation> for ActionState {
 #[derive(PartialEq, Debug, Clone)]
 pub struct ActionState {
     pub stage: ActionStage,
-    pub id: Id
+    pub id: OperationId
 }
 
 

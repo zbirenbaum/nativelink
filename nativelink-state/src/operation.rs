@@ -4,7 +4,7 @@ use uuid::Uuid;
 use nativelink_error::Error;
 use serde::{Serialize, Deserialize};
 use redis_macros::{ToRedisArgs, FromRedisValue};
-use nativelink_util::{action_messages::{ActionInfoHashKey, DirectoryInfo, ExecutionMetadata, FileInfo, Id, SymlinkInfo}, common::DigestInfo};
+use nativelink_util::{action_messages::{ActionInfoHashKey, DirectoryInfo, ExecutionMetadata, FileInfo, OperationId, SymlinkInfo}, common::DigestInfo};
 
 #[derive(Eq, PartialEq, Hash, Clone, Serialize, Deserialize, FromRedisValue, ToRedisArgs)]
 pub struct RedisId {
@@ -12,8 +12,8 @@ pub struct RedisId {
     unique_qualifier: ActionInfoHashKey
 }
 
-impl From<Id> for RedisId {
-    fn from(value: Id) -> Self {
+impl From<OperationId> for RedisId {
+    fn from(value: OperationId) -> Self {
         Self {
             id: value.id,
             unique_qualifier: value.unique_qualifier
@@ -21,9 +21,9 @@ impl From<Id> for RedisId {
     }
 }
 
-impl From<RedisId> for Id {
-    fn from(id: RedisId) -> Id {
-        Id {
+impl From<RedisId> for OperationId {
+    fn from(id: RedisId) -> OperationId {
+        OperationId {
             id: id.id,
             unique_qualifier: id.unique_qualifier
         }
@@ -33,7 +33,7 @@ impl From<RedisId> for Id {
 impl TryFrom<&str> for RedisId {
     type Error = Error;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(RedisId::from(Id::try_from(s)?))
+        Ok(RedisId::from(OperationId::try_from(s)?))
     }
 }
 

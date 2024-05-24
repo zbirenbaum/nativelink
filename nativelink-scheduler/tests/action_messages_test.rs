@@ -22,7 +22,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::ExecuteResponse;
 use nativelink_proto::google::longrunning::{operation, Operation};
 use nativelink_proto::google::rpc::Status;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata, Id,
+    ActionInfo, ActionInfoHashKey, ActionResult, ActionStage, ActionState, ExecutionMetadata,
+    OperationId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -49,7 +50,7 @@ mod action_messages_tests {
             digest: DigestInfo::new([1u8; 32], 5),
             salt: 0,
         };
-        let id = Id::new(unique_qualifier);
+        let id = OperationId::new(unique_qualifier);
         let action_state = ActionState {
             id,
             // Result is only populated if has_action_result.

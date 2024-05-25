@@ -5,6 +5,7 @@ use nativelink_util::digest_hasher::{DigestHasherFunc, DigestHasherFuncImpl};
 use nativelink_util::evicting_map::InstantWrapper;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use redis_macros::{FromRedisValue, ToRedisArgs};
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 use tokio::sync::watch;
 use bitflags::{bitflags, Flags};
@@ -19,50 +20,19 @@ use serde::{Serialize, Deserialize};
 macro_rules! field_names {
     (
         $(#[$outer:meta])*
-        $vis:vis struct $name:ident { $($fvis:vis $fname:ident : $ftype:ty),* }
+        $vis:vis struct $name:ident { $($fname:ident : $ftype:ty),* }
     ) => {
+        $(#[$outer])*
         $vis struct $name {
-            $($fvis $fname : $ftype),*
+            $($fname : $ftype),*
         }
 
         impl $name {
-            fn fields<'a>(&self) -> &'a [&'a str] {
-                let names: &'a[&'a str] = &[$(stringify!($fname)),*];
-                names
+            pub fn fields(&self) -> &'static [&'static str] {
+                static NAMES: &'static [&'static str] = &[$(stringify!($fname)),*];
+                NAMES
             }
-            fn types<'a>(&self) -> &'a [&'a str] {
-                let types : &'a[&'a str] = &[$(stringify!($ftype)),*];
-                types
-            }
-
-            fn pairs(&self) -> Vec<(String, String)> {
-                let names = self.fields();
-                let types = self.types();
-                names.iter().map(
-                    |s| { s.to_string() }
-                ).zip(types.iter().map(|s| {s.to_string()})).collect()
-            }
-
-            // fn index_args(&self) -> Vec<String> {
-            //     let pairs = self.pairs();
-            //     Vec::new();
-            //     let ARGS: &'static [&'static str] = [$(stringify!($fname)),*];
-            //
-            //     ARGS
-            // }
         }
-    }
-}
-
-trait JsonConvertable<'a>: Serialize + Deserialize<'a> {
-    fn as_json(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap()
-    }
-    fn as_json_string(&self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
-    fn from_str(s: &'a str) -> Self {
-        serde_json::from_str(s).unwrap()
     }
 }
 
@@ -274,6 +244,7 @@ impl From<ActionInfo> for RedisActionInfo {
         }
     }
 }
+
 impl From<RedisActionInfo> for ActionInfo {
     fn from(value: RedisActionInfo) -> Self {
         Self {
@@ -291,7 +262,13 @@ impl From<RedisActionInfo> for ActionInfo {
     }
 }
 
-#[derive(Eq, PartialEq, Clone, Serialize, Deserialize, ToRedisArgs, FromRedisValue)]
+pub trait JsonConvertable<'a>: Serialize + Deserialize<'a> {
+    fn as_json(&self) -> serde_json::Value;
+    fn as_json_string(&self) -> String;
+    fn from_str(s: &'a str) -> Self;
+}
+
+#[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct RedisOperation {
     // Other tracking fields
     pub stage: OperationStageFlags,
@@ -303,13 +280,131 @@ pub struct RedisOperation {
     pub action_info: RedisActionInfo
 }
 
-
+impl JsonConvertable<'_> for RedisOperation {
+    fn as_json(&self) -> serde_json::Value {
+        let json = RedisOperationJson::from(self);
+        serde_json::to_value(json).unwrap()
+    }
+    fn as_json_string(&self) -> String {
+        let json = RedisOperationJson::from(self);
+        serde_json::to_string(&json).unwrap()
+    }
+    fn from_str(s: &'_ str) -> Self {
+        serde_json::from_str(s).unwrap()
+    }
+}
 impl From<RedisOperation> for ActionInfo {
     fn from(value: RedisOperation) -> Self {
         ActionInfo::from(value.action_info)
     }
 }
 
+field_names! {
+    #[derive(Eq, PartialEq, Clone, Serialize, Deserialize)]
+    pub struct RedisOperationJson {
+        stage: OperationStageFlags,
+        operation_id: String,
+        worker_id: Option<String>,
+        last_worker_update: SystemTime,
+        completed_at: Option<SystemTime>,
+        last_client_update: Option<SystemTime>,
+        command_digest: DigestInfo,
+        input_root_digest: DigestInfo,
+        timeout: Duration,
+        platform_properties: RedisPlatformProperties,
+        priority: i32,
+        load_timestamp: SystemTime,
+        insert_timestamp: SystemTime,
+        unique_qualifier: String,
+        skip_cache_lookup: bool,
+        digest_function: RedisDigestHasherFunc
+    }
+}
+
+impl JsonConvertable<'_> for RedisOperationJson {
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::to_value(self.clone()).unwrap()
+    }
+    fn as_json_string(&self) -> String {
+        serde_json::to_string(&self).unwrap()
+    }
+    fn from_str(s: &'_ str) -> Self {
+        serde_json::from_str(s).unwrap()
+    }
+}
+
+impl From<RedisOperationJson> for RedisOperation {
+    fn from(value: RedisOperationJson) -> Self {
+        Self {
+            stage: value.stage,
+            operation_id: value.operation_id,
+            worker_id: value.worker_id,
+            last_worker_update: value.last_worker_update,
+            completed_at: value.completed_at,
+            last_client_update: value.last_client_update,
+            action_info: RedisActionInfo {
+                command_digest: value.command_digest,
+                input_root_digest: value.input_root_digest,
+                timeout: value.timeout,
+                platform_properties: value.platform_properties,
+                priority: value.priority,
+                load_timestamp: value.load_timestamp,
+                insert_timestamp: value.insert_timestamp,
+                unique_qualifier: value.unique_qualifier,
+                skip_cache_lookup: value.skip_cache_lookup,
+                digest_function: value.digest_function,
+            }
+        }
+    }
+}
+
+// Note: Redis index doesn't support nested objects so we can just unpack it to index everything instead
+impl From<&RedisOperation> for RedisOperationJson {
+    fn from(value: &RedisOperation) -> Self {
+        Self {
+            stage: value.stage.clone(),
+            operation_id: value.operation_id.clone(),
+            worker_id: value.worker_id.clone(),
+            last_worker_update: value.last_worker_update,
+            completed_at: value.completed_at,
+            last_client_update: value.last_client_update,
+            command_digest: value.action_info.command_digest,
+            input_root_digest: value.action_info.input_root_digest,
+            timeout: value.action_info.timeout,
+            platform_properties: value.action_info.platform_properties.clone(),
+            priority: value.action_info.priority,
+            load_timestamp: value.action_info.load_timestamp,
+            insert_timestamp: value.action_info.insert_timestamp,
+            unique_qualifier: value.action_info.unique_qualifier.clone(),
+            skip_cache_lookup: value.action_info.skip_cache_lookup,
+            digest_function: value.action_info.digest_function,
+        }
+    }
+}
+
+// Note: Redis index doesn't support nested objects so we can just unpack it to index everything instead
+impl From<RedisOperation> for RedisOperationJson {
+    fn from(value: RedisOperation) -> Self {
+        Self {
+            stage: value.stage,
+            operation_id: value.operation_id,
+            worker_id: value.worker_id,
+            last_worker_update: value.last_worker_update,
+            completed_at: value.completed_at,
+            last_client_update: value.last_client_update,
+            command_digest: value.action_info.command_digest,
+            input_root_digest: value.action_info.input_root_digest,
+            timeout: value.action_info.timeout,
+            platform_properties: value.action_info.platform_properties,
+            priority: value.action_info.priority,
+            load_timestamp: value.action_info.load_timestamp,
+            insert_timestamp: value.action_info.insert_timestamp,
+            unique_qualifier: value.action_info.unique_qualifier,
+            skip_cache_lookup: value.action_info.skip_cache_lookup,
+            digest_function: value.action_info.digest_function,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperationFilterKeys {
     Stages(OperationStageFlags),

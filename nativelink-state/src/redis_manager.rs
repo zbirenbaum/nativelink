@@ -10,7 +10,7 @@ use nativelink_error::Error;
 use tokio::sync::watch;
 use serde::{Serialize, Deserialize};
 
-use crate::type_wrappers::{OperationStageFlags, RedisDigestHasherFunc, RedisPlatformProperties, RedisPlatformPropertyValue};
+use crate::type_wrappers::{OperationStageFlags, RedisDigestHasherFunc, RedisPlatformProperties};
 use crate::operation_state_manager::{ActionStateResult, MatchingEngineStateManager, OperationFilter};
 
 pub struct RedisActionState {

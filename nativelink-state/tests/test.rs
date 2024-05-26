@@ -20,7 +20,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 
 #[cfg(test)]
 mod action_messages_tests {

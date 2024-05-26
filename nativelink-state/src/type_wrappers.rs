@@ -44,12 +44,24 @@ enum RedisPlatformPropertyType {
     Unknown,
 }
 
-#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd, Debug, Deserialize)]
 pub struct RedisPlatformPropertyValue {
     property_type: RedisPlatformPropertyType,
     property_value: String
 }
 
+impl Serialize for RedisPlatformPropertyValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer
+    {
+        match self.property_type {
+            RedisPlatformPropertyType::Minimum => serializer.serialize_u64(
+                self.property_value.as_str().parse::<u64>().unwrap()
+            )
+        }
+    }
+}
 impl From<PlatformPropertyValue> for RedisPlatformPropertyValue {
     fn from(value: PlatformPropertyValue) -> Self {
         match value {
@@ -84,7 +96,7 @@ impl From<RedisPlatformPropertyValue> for PlatformPropertyValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RedisPlatformProperties {
     pub properties: HashMap<String, RedisPlatformPropertyValue>,
 }

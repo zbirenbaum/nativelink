@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
-use nativelink_util::action_messages::ActionInfo;
+use nativelink_util::action_messages::{ActionInfo, ActionInfoHashKey, OperationId};
 
 use crate::scheduler_state::awaited_action::AwaitedAction;
 use crate::scheduler_state::completed_action::CompletedAction;
@@ -49,6 +49,10 @@ pub(crate) struct StateManager {
     ///
     /// Important: `queued_actions_set` and `queued_actions` must be kept in sync.
     pub(crate) queued_actions: BTreeMap<Arc<ActionInfo>, AwaitedAction>,
+
+    /// Used to find the OperationId given an ActionInfoHashKey. Only valid
+    /// in a non-distributed context like SimpleScheduler.
+    pub(crate) operation_ids: HashMap<Arc<ActionInfo>, OperationId>,
 
     /// A `Workers` pool that contains all workers that are available to execute actions in a priority
     /// order based on the allocation strategy.

@@ -137,7 +137,10 @@ impl SimpleSchedulerImpl {
         self.metrics.add_action_new_action_created.inc();
         // Action needs to be added to queue or is not cacheable.
         let action_info = Arc::new(action_info);
+        // Since this is not a distributed context, we can make OperationId and
+        // ActionInfoHashKey a 1:1 mapping
         let id = OperationId::new(action_info.unique_qualifier.clone());
+        self.state_manager.operation_ids.insert(action_info.clone(), id.clone());
 
         let current_state = Arc::new(ActionState {
             id,
@@ -628,6 +631,7 @@ impl SimpleScheduler {
         let state_manager = StateManager {
             queued_actions_set: HashSet::new(),
             queued_actions: BTreeMap::new(),
+            operation_ids: HashMap::new(),
             workers: Workers::new(scheduler_cfg.allocation_strategy),
             active_actions: HashMap::new(),
             recently_completed_actions: HashSet::new(),

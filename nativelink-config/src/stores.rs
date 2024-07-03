@@ -862,11 +862,12 @@ pub enum ErrorCode {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RedisStore {
     /// The hostname or IP address of the Redis server.
-    /// Ex: ["redis://username:password@redis-server-url:6380/99"]
+    /// Ex:
     /// 99 Represents database ID, 6380 represents the port.
-    #[serde(deserialize_with = "convert_vec_string_with_shellexpand")]
-    pub addresses: Vec<String>,
-
+// foo.com:30001?node=bar.com:30002&node=baz.com:30003
+    /// Centralized Node: "redis://username:password@redis-server-url:6380/99"
+    /// Cluster Node: "redis://username:password@redis-1:6380/97?node=redis-2:6381/98&node=redis-3:6382/99"
+    pub address: String,
     /// The response timeout for the Redis connection in seconds.
     ///
     /// Default: 10
@@ -878,6 +879,12 @@ pub struct RedisStore {
     /// Default: 10
     #[serde(default)]
     pub connection_timeout_s: u64,
+
+    /// The number of connections to create for the connection pool.
+    ///
+    /// Default: 5
+    #[serde(default)]
+    pub pool_size: u64,
 
     /// An optional and experimental Redis channel to publish write events to.
     ///
@@ -915,9 +922,10 @@ pub struct RedisStore {
 #[serde(rename_all = "lowercase")]
 pub enum RedisMode {
     Cluster,
-    Sentinel,
+    /// Add back Sentinel once supported.
+    // Sentinel,
     #[default]
-    Standard,
+    Centralized,
 }
 
 /// Retry configuration. This configuration is exponential and each iteration

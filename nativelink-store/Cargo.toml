@@ -45,6 +45,7 @@ tokio-util = { version = "0.7.11" }
 tonic = { version = "0.11.0", features = ["gzip", "tls"] }
 tracing = "0.1.40"
 uuid = { version = "1.8.0", features = ["v4"] }
+fred = { version = "9.0.3", features = ["serde-json", "subscriber-client", "replicas", "i-cluster", "i-pubsub", "i-client"] }
 
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }

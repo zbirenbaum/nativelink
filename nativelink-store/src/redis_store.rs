@@ -25,10 +25,10 @@ use fred::clients::{RedisPool, SubscriberClient};
 use fred::mocks::Mocks;
 use fred::prelude::*;
 use nativelink_config::stores::RedisMode;
+use nativelink_metric::MetricsComponent;
 use nativelink_error::{make_err, Code, Error, ResultExt};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
-use nativelink_util::metrics_utils::{Collector, CollectorState, MetricsComponent, Registry};
 use nativelink_util::store_trait::{StoreDriver, StoreKey, UploadSizeInfo};
 use uuid::Uuid;
 
@@ -39,6 +39,7 @@ pub const READ_CHUNK_SIZE: usize = 64 * 1024;
 pub const CONNECTION_POOL_SIZE: usize = 3;
 
 /// A [`StoreDriver`] implementation that uses Redis as a backing store.
+#[derive(Debug, MetricsComponent)]
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
@@ -381,17 +382,9 @@ impl StoreDriver for RedisStore {
         self
     }
 
-    fn register_metrics(self: Arc<Self>, registry: &mut Registry) {
-        registry.register_collector(Box::new(Collector::new(&self)));
-    }
-
     fn register_health(self: Arc<Self>, registry: &mut HealthRegistryBuilder) {
         registry.register_indicator(self);
     }
-}
-
-impl MetricsComponent for RedisStore {
-    fn gather_metrics(&self, _c: &mut CollectorState) {}
 }
 
 #[async_trait]

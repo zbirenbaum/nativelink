@@ -45,7 +45,7 @@ pub struct RedisStore {
     client_pool: RedisPool,
 
     /// A dedicated client running in `subscriber` mode
-    _subscriber: SubscriberClient,
+    pub subscriber: SubscriberClient,
 
     /// A channel to publish updates to when a key is added, removed, or modified
     pub_sub_channel: Option<String>,
@@ -115,7 +115,7 @@ impl RedisStore {
 
         Ok(Self {
             client_pool,
-            _subscriber: subscriber,
+            subscriber,
             pub_sub_channel: config.experimental_pub_sub_channel.clone(),
             temp_name_generator_fn,
             key_prefix: config.key_prefix.clone(),
@@ -133,6 +133,14 @@ impl RedisStore {
             encoded_key.push_str(&key_body);
             Cow::Owned(encoded_key)
         }
+    }
+
+    pub async fn get_client(&self) -> RedisClient {
+        self.client_pool.next().clone()
+    }
+
+    pub async fn get_subscriber_client(&self) -> SubscriberClient {
+        self.subscriber.clone()
     }
 }
 

@@ -1,0 +1,70 @@
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_doc",
+    "rust_doc_test",
+    "rust_library",
+)
+
+rust_library(
+    name = "nativelink-metric",
+    srcs = [
+        "src/lib.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-metric/macro-derive",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crates//:async-lock",
+        "@crates//:parking_lot",
+        "@crates//:tokio",
+        "@crates//:tracing",
+    ],
+)
+
+rust_test_suite(
+    name = "integration",
+    timeout = "short",
+    srcs = [
+        "tests/cache_lookup_scheduler_test.rs",
+        "tests/metric_derive_test.rs",
+        "tests/property_modifier_scheduler_test.rs",
+        "tests/simple_scheduler_test.rs",
+    ],
+    compile_data = [
+        "tests/utils/mock_scheduler.rs",
+        "tests/utils/scheduler_utils.rs",
+    ],
+    proc_macro_deps = [
+        "//nativelink-macro",
+        "@crates//:async-trait",
+    ],
+    deps = [
+        ":nativelink-scheduler",
+        "//nativelink-config",
+        "//nativelink-error",
+        "//nativelink-metric",
+        "//nativelink-proto",
+        "//nativelink-store",
+        "//nativelink-util",
+        "@crates//:futures",
+        "@crates//:mock_instant",
+        "@crates//:pretty_assertions",
+        "@crates//:prost",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:uuid",
+    ],
+)
+
+rust_doc(
+    name = "docs",
+    crate = ":nativelink-metric",
+    visibility = ["//visibility:public"],
+)
+
+rust_doc_test(
+    name = "doc_test",
+    timeout = "short",
+    crate = ":nativelink-metric",
+)

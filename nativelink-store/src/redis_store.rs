@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use fred::clients::RedisPool;
+use fred::clients::{RedisClient, RedisPool, SubscriberClient};
 use fred::interfaces::{ClientLike, KeysInterface, PubsubInterface};
 use fred::types::{Builder, ConnectionConfig, PerformanceConfig, ReconnectPolicy, RedisConfig};
 use nativelink_config::stores::RedisMode;
@@ -42,6 +42,8 @@ const CONNECTION_POOL_SIZE: usize = 3;
 pub struct RedisStore {
     /// The client pool connecting to the backing Redis instance(s).
     client_pool: RedisPool,
+
+    subscriber: SubscriberClient,
 
     /// A channel to publish updates to when a key is added, removed, or modified.
     pub_sub_channel: Option<String>,
@@ -114,17 +116,28 @@ impl RedisStore {
             .build_pool(CONNECTION_POOL_SIZE)
             .err_tip(|| "while creating redis connection pool")?;
 
+        let subscriber = builder
+            .build_subscriber_client()
+            .err_tip(|| "while creating redis subscriber client")?;
         // Fires off a background task using `tokio::spawn`.
         client_pool.connect();
 
         Ok(Self {
             client_pool,
+            subscriber,
             pub_sub_channel,
             temp_name_generator_fn,
             key_prefix,
         })
     }
 
+    pub fn get_subscriber_client(&self) -> SubscriberClient {
+        self.subscriber.clone()
+    }
+
+    pub fn get_client(&self) -> RedisClient {
+        self.client_pool.next_connected().clone()
+    }
     /// Encode a [`StoreKey`] so it can be sent to Redis.
     fn encode_key<'a>(&self, key: &'a StoreKey<'a>) -> Cow<'a, str> {
         let key_body = key.as_str();

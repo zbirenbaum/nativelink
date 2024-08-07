@@ -38,6 +38,7 @@ use tracing::{event, Level};
 
 use crate::action_scheduler::{ActionListener, ActionScheduler};
 use crate::api_worker_scheduler::ApiWorkerScheduler;
+use crate::awaited_action_db::{AwaitedActionDb, AwaitedActionSubscriber};
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
@@ -246,6 +247,66 @@ impl SimpleScheduler {
     }
 }
 
+enum BackendDynTypeTest {
+    Memory,
+    Other
+}
+
+
+#[derive(MetricsComponent)]
+struct DynTypeTest {}
+struct DynTypeTestSubscriber {}
+
+impl AwaitedActionSubscriber for DynTypeTestSubscriber {
+    fn borrow(&self) -> crate::awaited_action_db::AwaitedAction {
+        todo!()
+    }
+    fn changed(&mut self) -> impl Future<Output = Result<crate::awaited_action_db::AwaitedAction, Error>> + Send {
+        async { todo!() }
+    }
+}
+impl AwaitedActionDb for DynTypeTest {
+    type Subscriber = DynTypeTestSubscriber;
+    fn add_action(
+        &self,
+        _client_operation_id: OperationId,
+        _action_info: Arc<ActionInfo>,
+    ) -> impl Future<Output = Result<Self::Subscriber, Error>> + Send {
+        async { todo!() }
+    }
+    fn get_by_operation_id(
+        &self,
+        _operation_id: &OperationId,
+    ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send {
+        async { todo!() }
+    }
+    fn get_range_of_actions(
+        &self,
+        _state: crate::awaited_action_db::SortedAwaitedActionState,
+        _start: std::ops::Bound<crate::awaited_action_db::SortedAwaitedAction>,
+        _end: std::ops::Bound<crate::awaited_action_db::SortedAwaitedAction>,
+        _desc: bool,
+    ) -> impl Future<Output = impl futures::Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send {
+        async { tokio_stream::iter(vec![]) }
+    }
+    fn update_awaited_action(
+        &self,
+        _new_awaited_action: crate::awaited_action_db::AwaitedAction,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { todo!() }
+    }
+    fn get_all_awaited_actions(
+        &self,
+    ) -> impl Future<Output = impl futures::Stream<Item = Result<Self::Subscriber, Error>> + Send> + Send {
+        async { tokio_stream::iter(vec![]) }
+    }
+    fn get_awaited_action_by_id(
+        &self,
+        _client_operation_id: &OperationId,
+    ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> + Send {
+        async { todo!() }
+    }
+}
 impl SimpleScheduler {
     pub fn new(
         scheduler_cfg: &nativelink_config::schedulers::SimpleScheduler,
@@ -299,17 +360,25 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let backend_test = BackendDynTypeTest::Memory;
         let tasks_or_worker_change_notify = Arc::new(Notify::new());
         let state_manager = SimpleSchedulerStateManager::new(
             tasks_or_worker_change_notify.clone(),
             max_job_retries,
-            MemoryAwaitedActionDb::new(
-                &EvictionPolicy {
-                    max_seconds: retain_completed_for_s,
-                    ..Default::default()
-                },
-                now_fn,
-            ),
+            match backend_test {
+                BackendDynTypeTest::Other => {
+                    DynTypeTest {} as dyn AwaitedActionDb
+                }
+                BackendDynTypeTest::Memory => {
+                    MemoryAwaitedActionDb::new(
+                        &EvictionPolicy {
+                            max_seconds: retain_completed_for_s,
+                            ..Default::default()
+                        },
+                        now_fn,
+                    ) as dyn AwaitedActionDb
+                }
+            }
         );
 
         let worker_scheduler = ApiWorkerScheduler::new(
